@@ -6,17 +6,16 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Globe, Loader2, Cpu } from 'lucide-react';
 import { useWebLLM } from '@/hooks/useWebLLM';
-import { useCrawler } from '@/hooks/useCrawler';
+import { createCrawl } from '@/hooks/useCrawler';
 
 export function CrawlForm() {
   const router = useRouter();
   const webllm = useWebLLM();
-  const crawler = useCrawler();
   const [url, setUrl] = useState('');
   const [limit, setLimit] = useState(50);
   const [analyze, setAnalyze] = useState(true);
   const [selectedModel, setSelectedModel] = useState(
-    webllm.currentModel ?? webllm.availableModels[1]?.id ?? webllm.availableModels[0]?.id ?? '',
+    webllm.currentModel ?? webllm.availableModels[5]?.id ?? webllm.availableModels[0]?.id ?? '',
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -44,7 +43,7 @@ export function CrawlForm() {
 
     setSubmitting(true);
     try {
-      // Load model if needed
+      // Load model if needed (before navigating so we don't lose the context)
       if (analyze && !webllm.isReady) {
         if (!webllm.hasWebGPU) {
           setError('WebGPU not supported in this browser. Disable analysis or use Chrome/Edge.');
@@ -54,15 +53,9 @@ export function CrawlForm() {
         await webllm.load(selectedModel);
       }
 
-      const crawlId = await crawler.startCrawl(finalUrl, {
-        limit,
-        analyze,
-        modelId: selectedModel,
-      });
-
-      if (crawlId) {
-        router.push(`/crawl/detail?id=${crawlId}`);
-      }
+      // Create record instantly and navigate — detail page runs the actual crawl
+      const crawlId = await createCrawl(finalUrl, { limit, analyze });
+      router.push(`/crawl/detail?id=${crawlId}&analyze=${analyze}&limit=${limit}`);
     } catch {
       setError('Failed to start crawl');
     } finally {

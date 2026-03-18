@@ -1,17 +1,16 @@
 /**
  * React hook orchestrating the full crawl + analyze pipeline
  *
- * 1. Create crawl record in Dexie (status: 'crawling')
- * 2. Run crawlFromBrowser() with callbacks → insert pages into Dexie
- * 3. After crawl: auto-trigger analysis if model loaded
- * 4. Run analyzePageForGeo() for each page
- * 5. Run aggregateResults() from engine.ts
- * 6. Update crawl record with final grade/score/metrics
+ * Split into two phases:
+ * - createCrawl(): instant — creates Dexie record, returns crawlId (form can navigate immediately)
+ * - executeCrawl(): async — runs the actual crawl + analysis, writes progress to Dexie
+ *
+ * The detail page calls executeCrawl() on mount, useLiveQuery reacts to Dexie writes.
  */
 
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { db } from '@/lib/db/dexie-client';
 import { crawlFromBrowser, type WebCrawlPage } from '@/lib/crawler/web-client';
 import { analyzePageForGeo } from '@/lib/webllm/analyzer';
@@ -28,6 +27,33 @@ export interface CrawlerState {
   analyzedCount: number;
 }
 
+/**
+ * Create a crawl record in Dexie. Returns the crawlId instantly.
+ * Does NOT start the crawl — call executeCrawl() for that.
+ */
+export async function createCrawl(
+  baseUrl: string,
+  options: { limit?: number; analyze?: boolean },
+): Promise<number> {
+  const { limit = 50 } = options;
+
+  const crawlId = await db.crawls.add({
+    baseUrl,
+    status: 'pending',
+    pagesCrawled: 0,
+    pageLimit: limit,
+    overallGrade: null,
+    premiumScore: null,
+    siteMetrics: null,
+    primaryJsonLd: null,
+    llmsTxt: null,
+    errorMessage: null,
+    createdAt: new Date().toISOString(),
+  });
+
+  return crawlId as number;
+}
+
 export function useCrawler() {
   const [state, setState] = useState<CrawlerState>({
     status: 'idle',
@@ -39,48 +65,49 @@ export function useCrawler() {
   });
 
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
-  const startCrawl = useCallback(async (
+  /** Safe setState that no-ops if unmounted */
+  const safeSetState = useCallback((updater: (s: CrawlerState) => CrawlerState) => {
+    if (mountedRef.current) setState(updater);
+  }, []);
+
+  /**
+   * Execute crawl + optional analysis for an existing crawl record.
+   * Call this from the detail page after navigation.
+   */
+  const executeCrawl = useCallback(async (
+    crawlId: number,
     baseUrl: string,
-    options: { limit?: number; analyze?: boolean; modelId?: string },
-  ): Promise<number | null> => {
+    options: { limit?: number; analyze?: boolean },
+  ): Promise<void> => {
     const { limit = 50, analyze = true } = options;
 
-    // Create crawl record
-    const crawlId = await db.crawls.add({
-      baseUrl,
-      status: 'crawling',
-      pagesCrawled: 0,
-      pageLimit: limit,
-      overallGrade: null,
-      premiumScore: null,
-      siteMetrics: null,
-      primaryJsonLd: null,
-      llmsTxt: null,
-      errorMessage: null,
-      createdAt: new Date().toISOString(),
-    });
+    // Guard: don't re-execute if already running
+    if (state.status === 'crawling' || state.status === 'analyzing') return;
 
-    setState({
+    safeSetState(() => ({
       status: 'crawling',
       progress: 0,
       message: 'Starting crawl...',
-      crawlId: crawlId as number,
+      crawlId,
       pageCount: 0,
       analyzedCount: 0,
-    });
+    }));
 
     abortRef.current = new AbortController();
 
     try {
+      await db.crawls.update(crawlId, { status: 'crawling' });
+
       // Phase 1: Crawl
       const pages = await crawlFromBrowser(baseUrl, {
         limit,
         signal: abortRef.current.signal,
         onPage: async (page: WebCrawlPage, index: number) => {
-          // Insert page into Dexie
           await db.crawlPages.add({
-            crawlId: crawlId as number,
+            crawlId,
             url: page.url,
             title: page.title,
             description: page.description,
@@ -89,43 +116,41 @@ export function useCrawler() {
             status: 'crawled',
           });
 
-          await db.crawls.update(crawlId as number, { pagesCrawled: index + 1 });
+          await db.crawls.update(crawlId, { pagesCrawled: index + 1 });
 
-          setState((s) => ({
+          safeSetState((s) => ({
             ...s,
             pageCount: index + 1,
             message: `Crawled: ${page.url}`,
           }));
         },
         onProgress: (message, progress) => {
-          setState((s) => ({ ...s, message, progress: Math.round(progress * 0.5) }));
+          safeSetState((s) => ({ ...s, message, progress: Math.round(progress * 0.5) }));
         },
       });
 
       if (abortRef.current.signal.aborted) {
-        await db.crawls.update(crawlId as number, { status: 'failed', errorMessage: 'Cancelled by user' });
-        setState((s) => ({ ...s, status: 'failed', message: 'Cancelled' }));
-        return crawlId as number;
+        await db.crawls.update(crawlId, { status: 'failed', errorMessage: 'Cancelled by user' });
+        safeSetState((s) => ({ ...s, status: 'failed', message: 'Cancelled' }));
+        return;
       }
 
-      await db.crawls.update(crawlId as number, {
+      await db.crawls.update(crawlId, {
         pagesCrawled: pages.length,
         status: analyze && isModelLoaded() ? 'analyzing' : 'completed',
       });
 
       // Phase 2: Analyze (if model is loaded)
       if (analyze && isModelLoaded()) {
-        setState((s) => ({ ...s, status: 'analyzing', message: 'Starting AI analysis...', progress: 50 }));
+        safeSetState((s) => ({ ...s, status: 'analyzing', message: 'Starting AI analysis...', progress: 50 }));
 
-        const crawlPages = await db.crawlPages.where('crawlId').equals(crawlId as number).toArray();
+        const crawlPages = await db.crawlPages.where('crawlId').equals(crawlId).toArray();
         const pageResults: Array<{ page_url: string; result: GeoPageAnalysis }> = [];
 
         for (let i = 0; i < crawlPages.length; i++) {
           if (abortRef.current.signal.aborted) break;
 
           const page = crawlPages[i];
-
-          // Skip already analyzed
           if (page.status === 'analyzed') continue;
 
           await db.crawlPages.update(page.id!, { status: 'analyzing' });
@@ -136,13 +161,12 @@ export function useCrawler() {
               markdown: page.markdown,
               baseUrl,
               onProgress: (msg) => {
-                setState((s) => ({ ...s, message: msg }));
+                safeSetState((s) => ({ ...s, message: msg }));
               },
             });
 
-            // Store analysis
             await db.pageAnalyses.add({
-              crawlId: crawlId as number,
+              crawlId,
               crawlPageId: page.id!,
               url: page.url,
               entityClarityScore: result.entity_clarity_score,
@@ -165,7 +189,7 @@ export function useCrawler() {
             await db.crawlPages.update(page.id!, { status: 'analyzed' });
 
             pageResults.push({ page_url: page.url, result });
-            setState((s) => ({
+            safeSetState((s) => ({
               ...s,
               analyzedCount: i + 1,
               progress: 50 + Math.round(((i + 1) / crawlPages.length) * 50),
@@ -178,7 +202,7 @@ export function useCrawler() {
         // Aggregate results
         if (pageResults.length > 0) {
           const aggregated = aggregateResults(baseUrl, pageResults);
-          await db.crawls.update(crawlId as number, {
+          await db.crawls.update(crawlId, {
             status: 'completed',
             overallGrade: aggregated.site_metrics.overall_grade,
             premiumScore: aggregated.site_metrics.premium_score,
@@ -187,24 +211,29 @@ export function useCrawler() {
             llmsTxt: aggregated.llms_txt,
           });
         } else {
-          await db.crawls.update(crawlId as number, { status: 'completed' });
+          await db.crawls.update(crawlId, { status: 'completed' });
         }
       }
 
-      setState((s) => ({ ...s, status: 'completed', progress: 100, message: 'Complete' }));
-      return crawlId as number;
+      safeSetState((s) => ({ ...s, status: 'completed', progress: 100, message: 'Complete' }));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      await db.crawls.update(crawlId as number, { status: 'failed', errorMessage });
-      setState((s) => ({ ...s, status: 'failed', message: errorMessage }));
-      return crawlId as number;
+      await db.crawls.update(crawlId, { status: 'failed', errorMessage });
+      safeSetState((s) => ({ ...s, status: 'failed', message: errorMessage }));
     }
-  }, []);
+  }, [state.status, safeSetState]);
 
   const resumeAnalysis = useCallback(async (crawlId: number, baseUrl: string) => {
     if (!isModelLoaded()) return;
 
-    setState((s) => ({ ...s, crawlId, status: 'analyzing', message: 'Resuming analysis...', progress: 50 }));
+    safeSetState(() => ({
+      status: 'analyzing',
+      progress: 50,
+      message: 'Resuming analysis...',
+      crawlId,
+      pageCount: 0,
+      analyzedCount: 0,
+    }));
     abortRef.current = new AbortController();
 
     try {
@@ -213,11 +242,9 @@ export function useCrawler() {
       const crawlPages = await db.crawlPages.where('crawlId').equals(crawlId).toArray();
       const unanalyzed = crawlPages.filter((p) => p.status !== 'analyzed');
 
-      // Also load existing analyses for aggregation
       const existingAnalyses = await db.pageAnalyses.where('crawlId').equals(crawlId).toArray();
       const pageResults: Array<{ page_url: string; result: GeoPageAnalysis }> = [];
 
-      // Include already-analyzed pages in results
       for (const a of existingAnalyses) {
         pageResults.push({
           page_url: a.url,
@@ -251,7 +278,7 @@ export function useCrawler() {
             url: page.url,
             markdown: page.markdown,
             baseUrl,
-            onProgress: (msg) => setState((s) => ({ ...s, message: msg })),
+            onProgress: (msg) => safeSetState((s) => ({ ...s, message: msg })),
           });
 
           await db.pageAnalyses.add({
@@ -278,7 +305,7 @@ export function useCrawler() {
           await db.crawlPages.update(page.id!, { status: 'analyzed' });
           pageResults.push({ page_url: page.url, result });
 
-          setState((s) => ({
+          safeSetState((s) => ({
             ...s,
             analyzedCount: existingAnalyses.length + i + 1,
             progress: 50 + Math.round(((i + 1) / unanalyzed.length) * 50),
@@ -302,13 +329,13 @@ export function useCrawler() {
         await db.crawls.update(crawlId, { status: 'completed' });
       }
 
-      setState((s) => ({ ...s, status: 'completed', progress: 100, message: 'Analysis complete' }));
+      safeSetState((s) => ({ ...s, status: 'completed', progress: 100, message: 'Analysis complete' }));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       await db.crawls.update(crawlId, { status: 'failed', errorMessage });
-      setState((s) => ({ ...s, status: 'failed', message: errorMessage }));
+      safeSetState((s) => ({ ...s, status: 'failed', message: errorMessage }));
     }
-  }, []);
+  }, [safeSetState]);
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
@@ -316,7 +343,7 @@ export function useCrawler() {
 
   return {
     ...state,
-    startCrawl,
+    executeCrawl,
     resumeAnalysis,
     cancel,
   };

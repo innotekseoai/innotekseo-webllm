@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useCallback } from 'react';
+import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/header';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,12 +32,28 @@ export default function CrawlDetailPage() {
 function CrawlDetailContent() {
   const searchParams = useSearchParams();
   const id = parseInt(searchParams.get('id') ?? '0', 10);
+  const analyzeParam = searchParams.get('analyze') !== 'false';
+  const limitParam = parseInt(searchParams.get('limit') ?? '50', 10);
+
   const data = useCrawlDetail(id || undefined);
   const crawler = useCrawler();
   const webllm = useWebLLM();
   const [copied, setCopied] = useState('');
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const startedRef = useRef(false);
+
+  // Auto-start crawl when we land on a pending crawl (navigated from form)
+  useEffect(() => {
+    if (!data?.crawl || startedRef.current) return;
+    if (data.crawl.status === 'pending' && crawler.status === 'idle') {
+      startedRef.current = true;
+      crawler.executeCrawl(data.crawl.id!, data.crawl.baseUrl, {
+        limit: limitParam,
+        analyze: analyzeParam,
+      });
+    }
+  }, [data?.crawl, crawler.status, crawler.executeCrawl, analyzeParam, limitParam]);
 
   const handleResumeAnalysis = useCallback(async () => {
     if (!data?.crawl || !webllm.isReady) return;
@@ -63,11 +79,11 @@ function CrawlDetailContent() {
   const effectiveStatus = crawler.crawlId === crawl.id && crawler.status !== 'idle'
     ? crawler.status
     : crawl.status;
-  const isLive = ['crawling', 'analyzing'].includes(effectiveStatus);
+  const isLive = ['crawling', 'analyzing', 'pending'].includes(effectiveStatus);
   const isComplete = effectiveStatus === 'completed';
   const progress = crawler.crawlId === crawl.id ? crawler.progress : (isComplete ? 100 : 0);
 
-  // Build terminal lines from pages
+  // Build terminal lines from pages (reactive via useLiveQuery)
   const lines: ConsoleLine[] = pages.map((p, i) => ({
     type: 'page' as const,
     data: { url: p.url, title: p.title ?? '', charCount: p.charCount, index: i },
@@ -76,7 +92,9 @@ function CrawlDetailContent() {
   const steps: Array<{ label: string; status: 'pending' | 'active' | 'completed' | 'error'; detail?: string }> = [
     {
       label: 'Crawling pages',
-      status: isLive && effectiveStatus === 'crawling' ? 'active' : (pages.length > 0 || isComplete ? 'completed' : 'pending'),
+      status: effectiveStatus === 'crawling' || effectiveStatus === 'pending'
+        ? 'active'
+        : (pages.length > 0 || isComplete ? 'completed' : 'pending'),
       detail: `${pages.length} pages`,
     },
     {
@@ -171,7 +189,7 @@ function CrawlDetailContent() {
           </div>
         )}
         {isLive && <span className="text-xs text-muted">{progress}%</span>}
-        {isLive && <span className="text-xs text-muted truncate max-w-xs">{crawler.message}</span>}
+        {isLive && crawler.message && <span className="text-xs text-muted truncate max-w-xs">{crawler.message}</span>}
       </div>
 
       {/* WebLLM loading progress */}
@@ -196,7 +214,7 @@ function CrawlDetailContent() {
           {(isLive || lines.length > 0) && (
             <CrawlTerminal
               lines={lines}
-              status={isLive ? (effectiveStatus as 'crawling' | 'analyzing') : (isComplete ? 'completed' : effectiveStatus === 'failed' ? 'failed' : 'idle')}
+              status={isLive ? (effectiveStatus === 'analyzing' ? 'analyzing' : 'crawling') : (isComplete ? 'completed' : effectiveStatus === 'failed' ? 'failed' : 'idle')}
               baseUrl={crawl.baseUrl}
             />
           )}
