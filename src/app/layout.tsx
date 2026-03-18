@@ -13,7 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen">
         <Sidebar />
         {/* pt-14 on mobile for the fixed header bar, lg:pt-0 + lg:ml-60 for desktop sidebar */}
-        <main className="pt-14 px-4 pb-8 lg:pt-0 lg:ml-60 lg:p-8">{children}</main>
+        <main className="pt-14 px-3 pb-8 lg:pt-0 lg:ml-60 lg:p-8 overflow-x-hidden">{children}</main>
       </body>
     </html>
   );

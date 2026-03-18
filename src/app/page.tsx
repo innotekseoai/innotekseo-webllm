@@ -159,40 +159,34 @@ function DashboardContent() {
         </Card>
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+      {/* Stat cards — horizontal row on mobile, 3-col grid on sm+ */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
         <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2 text-muted">
-              <Globe className="w-4 h-4" />
-              <CardTitle>Total Crawls</CardTitle>
-            </div>
-          </CardHeader>
-          <p className="text-3xl font-bold text-text">{total}</p>
+          <div className="flex items-center gap-1.5 text-muted mb-1 sm:mb-3">
+            <Globe className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span className="text-[11px] sm:text-sm font-semibold text-text">Crawls</span>
+          </div>
+          <p className="text-xl sm:text-3xl font-bold text-text">{total}</p>
         </Card>
         <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2 text-muted">
-              <FileText className="w-4 h-4" />
-              <CardTitle>Pages Crawled</CardTitle>
-            </div>
-          </CardHeader>
-          <p className="text-3xl font-bold text-text">{totalPagesCount}</p>
+          <div className="flex items-center gap-1.5 text-muted mb-1 sm:mb-3">
+            <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span className="text-[11px] sm:text-sm font-semibold text-text">Pages</span>
+          </div>
+          <p className="text-xl sm:text-3xl font-bold text-text">{totalPagesCount}</p>
         </Card>
         <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2 text-muted">
-              <BarChart3 className="w-4 h-4" />
-              <CardTitle>Avg Score</CardTitle>
-            </div>
-          </CardHeader>
-          <p className="text-3xl font-bold text-accent">{avgScore > 0 ? `${avgScore}/100` : '--'}</p>
+          <div className="flex items-center gap-1.5 text-muted mb-1 sm:mb-3">
+            <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span className="text-[11px] sm:text-sm font-semibold text-text">Score</span>
+          </div>
+          <p className="text-xl sm:text-3xl font-bold text-accent">{avgScore > 0 ? `${avgScore}` : '--'}</p>
         </Card>
       </div>
 
       {/* Search + Filters */}
-      <div className="flex flex-wrap gap-3 mb-4">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
+      <div className="space-y-2 sm:space-y-0 sm:flex sm:flex-wrap sm:gap-3 mb-4">
+        <div className="relative w-full sm:flex-1 sm:max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
           <input
             type="text"
@@ -207,28 +201,30 @@ function DashboardContent() {
               placeholder:text-muted/50 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30"
           />
         </div>
-        <select
-          value={gradeFilter}
-          onChange={(e) => updateParams({ grade: e.target.value })}
-          className="bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
-            focus:outline-none focus:border-accent/50"
-        >
-          <option value="">All Grades</option>
-          {['A', 'B', 'C', 'D', 'F'].map((g) => (
-            <option key={g} value={g}>{g}</option>
-          ))}
-        </select>
-        <select
-          value={statusFilter}
-          onChange={(e) => updateParams({ status: e.target.value })}
-          className="bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
-            focus:outline-none focus:border-accent/50"
-        >
-          <option value="">All Statuses</option>
-          {['pending', 'crawling', 'analyzing', 'completed', 'failed'].map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
+        <div className="flex gap-2">
+          <select
+            value={gradeFilter}
+            onChange={(e) => updateParams({ grade: e.target.value })}
+            className="flex-1 sm:flex-none bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
+              focus:outline-none focus:border-accent/50"
+          >
+            <option value="">All Grades</option>
+            {['A', 'B', 'C', 'D', 'F'].map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => updateParams({ status: e.target.value })}
+            className="flex-1 sm:flex-none bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
+              focus:outline-none focus:border-accent/50"
+          >
+            <option value="">All Statuses</option>
+            {['pending', 'crawling', 'analyzing', 'completed', 'failed'].map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {selectedIds.size > 0 && (
