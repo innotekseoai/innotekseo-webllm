@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Globe, Loader2, Cpu } from 'lucide-react';
+import Link from 'next/link';
+import { Globe, Loader2, Cpu, AlertTriangle } from 'lucide-react';
 import { useWebLLM } from '@/hooks/useWebLLM';
 import { createCrawl } from '@/hooks/useCrawler';
 
@@ -19,6 +20,10 @@ export function CrawlForm() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  // Check if any model is cached (for showing helpful messages)
+  const hasCachedModels = Object.values(webllm.cacheStatus).some(Boolean);
+  const needsModel = analyze && !webllm.isReady;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,23 +46,42 @@ export function CrawlForm() {
       return;
     }
 
-    setSubmitting(true);
-    try {
-      // Load model if needed (before navigating so we don't lose the context)
-      if (analyze && !webllm.isReady) {
-        if (!webllm.hasWebGPU) {
-          setError('WebGPU not supported in this browser. Disable analysis or use Chrome/Edge.');
+    // Validate model is available when analysis is requested
+    if (analyze) {
+      if (!webllm.hasWebGPU) {
+        setError('WebGPU not supported in this browser. Disable analysis or use Chrome/Edge.');
+        return;
+      }
+
+      if (!webllm.isReady) {
+        // Try to load the selected model
+        setSubmitting(true);
+        try {
+          await webllm.load(selectedModel);
+        } catch (err) {
+          setError(
+            `Failed to load model: ${err instanceof Error ? err.message : 'unknown error'}. ` +
+            'Try loading from Settings first, or disable analysis.',
+          );
           setSubmitting(false);
           return;
         }
-        await webllm.load(selectedModel);
       }
 
-      // Create record instantly and navigate — detail page runs the actual crawl
+      // Double-check model is actually loaded after load attempt
+      if (!webllm.isReady) {
+        setError('No AI model loaded. Load a model from Settings or the dashboard first.');
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    try {
       const crawlId = await createCrawl(finalUrl, { limit, analyze });
       router.push(`/crawl/detail?id=${crawlId}&analyze=${analyze}&limit=${limit}`);
     } catch {
-      setError('Failed to start crawl');
+      setError('Failed to create crawl');
     } finally {
       setSubmitting(false);
     }
@@ -138,18 +162,36 @@ export function CrawlForm() {
               >
                 {webllm.availableModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label} ({m.sizeHint})
+                    {m.label} ({m.sizeHint}){webllm.cacheStatus[m.id] ? ' - cached' : ''}
                   </option>
                 ))}
               </select>
-              {!webllm.hasWebGPU && (
-                <p className="text-xs text-yellow-400/70">
+
+              {webllm.isReady && (
+                <p className="text-xs text-green-400/70">
+                  Model loaded: {webllm.currentModel}
+                </p>
+              )}
+
+              {needsModel && !webllm.hasWebGPU && (
+                <p className="text-xs text-red-400">
                   WebGPU not detected. Use Chrome or Edge for GPU acceleration.
                 </p>
               )}
-              {webllm.isReady && (
-                <p className="text-xs text-accent/70">
-                  Model loaded: {webllm.currentModel}
+
+              {needsModel && webllm.hasWebGPU && !hasCachedModels && (
+                <div className="flex items-start gap-2 p-2 bg-yellow-400/5 border border-yellow-400/20 rounded-lg">
+                  <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 mt-0.5 flex-shrink-0" />
+                  <div className="text-xs text-yellow-400/80">
+                    <p>No models downloaded yet. The selected model will be downloaded when you start the crawl (~{webllm.availableModels.find((m) => m.id === selectedModel)?.sizeHint ?? 'varies'}).</p>
+                    <Link href="/settings" className="underline">Download from Settings</Link> for faster starts.
+                  </div>
+                </div>
+              )}
+
+              {needsModel && webllm.hasWebGPU && hasCachedModels && (
+                <p className="text-xs text-yellow-400/70">
+                  Model will be loaded when crawl starts. Pick a cached model for instant start.
                 </p>
               )}
             </div>
