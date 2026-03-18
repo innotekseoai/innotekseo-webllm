@@ -89,13 +89,18 @@ function CrawlDetailContent() {
   const { crawl } = data;
   const sm = crawl.siteMetrics ? JSON.parse(crawl.siteMetrics) : null;
 
-  // Use crawler hook status if it's tracking this crawl, otherwise use DB status
-  const effectiveStatus = crawler.crawlId === crawl.id && crawler.status !== 'idle'
-    ? crawler.status
-    : crawl.status;
+  // Prefer crawler hook status when it's tracking this crawl, fall back to Dexie
+  const crawlerOwned = crawler.crawlId === crawl.id && crawler.status !== 'idle';
+  const effectiveStatus = crawlerOwned ? crawler.status : crawl.status;
   const isLive = ['crawling', 'analyzing', 'pending'].includes(effectiveStatus);
   const isComplete = effectiveStatus === 'completed';
-  const progress = crawler.crawlId === crawl.id ? crawler.progress : (isComplete ? 100 : 0);
+  const progress = crawlerOwned ? crawler.progress : (isComplete ? 100 : 0);
+  const liveMessage = crawlerOwned ? crawler.message : '';
+
+  // Count analyzed pages from Dexie for progress even when hook state doesn't update
+  const analyzedFromDb = analyses.length;
+  const totalPages = pages.length;
+  const analysisProgress = totalPages > 0 ? Math.round((analyzedFromDb / totalPages) * 100) : 0;
 
   const steps: Array<{ label: string; status: 'pending' | 'active' | 'completed' | 'error'; detail?: string }> = [
     {
@@ -108,7 +113,9 @@ function CrawlDetailContent() {
     {
       label: 'AI Analysis',
       status: effectiveStatus === 'analyzing' ? 'active' : (isComplete && sm ? 'completed' : 'pending'),
-      detail: effectiveStatus === 'analyzing' ? crawler.message : undefined,
+      detail: effectiveStatus === 'analyzing'
+        ? `${analyzedFromDb}/${totalPages} pages analyzed`
+        : undefined,
     },
   ];
 
@@ -186,18 +193,29 @@ function CrawlDetailContent() {
 
       <div className="flex flex-wrap items-center gap-3 mb-6">
         <StatusBadge status={effectiveStatus} />
-        {isLive && (
-          <div className="flex-1 min-w-24 max-w-xs">
-            <div className="h-1.5 bg-surface2 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-accent rounded-full transition-all duration-500"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
-        )}
-        {isLive && <span className="text-xs text-muted">{progress}%</span>}
-        {isLive && crawler.message && <span className="text-xs text-muted truncate max-w-xs">{crawler.message}</span>}
+        {isLive && (() => {
+          // Show hook progress if available, otherwise derive from Dexie data
+          const displayProgress = crawlerOwned
+            ? progress
+            : (effectiveStatus === 'analyzing' ? Math.round(50 + analysisProgress * 0.5) : 0);
+          const displayMessage = liveMessage
+            || (effectiveStatus === 'analyzing' ? `Analyzing page ${analyzedFromDb}/${totalPages}...` : '')
+            || (effectiveStatus === 'crawling' ? `Crawling... ${pages.length} pages found` : '');
+          return (
+            <>
+              <div className="flex-1 min-w-24 max-w-xs">
+                <div className="h-1.5 bg-surface2 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-accent rounded-full transition-all duration-500"
+                    style={{ width: `${displayProgress}%` }}
+                  />
+                </div>
+              </div>
+              <span className="text-xs text-muted">{displayProgress}%</span>
+              {displayMessage && <span className="text-xs text-muted truncate max-w-xs">{displayMessage}</span>}
+            </>
+          );
+        })()}
       </div>
 
       {/* WebLLM loading progress */}

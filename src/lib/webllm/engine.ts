@@ -210,8 +210,12 @@ export function getCurrentModelId(): string | null {
   return currentModelId;
 }
 
+/** Inference timeout — abort if a single completion takes longer than this */
+const INFERENCE_TIMEOUT_MS = 90_000;
+
 /**
  * Run chat completion with the loaded model.
+ * Includes a timeout to prevent indefinite hangs on slow GPUs.
  */
 export async function chatCompletion(
   systemPrompt: string,
@@ -219,14 +223,21 @@ export async function chatCompletion(
 ): Promise<string> {
   if (!engine) throw new Error('No model loaded');
 
-  const reply = await engine.chat.completions.create({
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    temperature: 0.3,
-    max_tokens: 1024,
-  });
+  // Race the inference against a timeout
+  const result = await Promise.race([
+    engine.chat.completions.create({
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.3,
+      // ~20 lines of scores + 3 recommendations = ~300 tokens max
+      max_tokens: 400,
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Inference timeout — model too slow or prompt too large')), INFERENCE_TIMEOUT_MS),
+    ),
+  ]);
 
-  return reply.choices[0]?.message?.content ?? '';
+  return result.choices[0]?.message?.content ?? '';
 }

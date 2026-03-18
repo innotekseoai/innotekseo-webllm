@@ -30,14 +30,27 @@ interface AnalyzePageInput {
 export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPageAnalysis> {
   const { url, markdown, baseUrl, onProgress } = input;
 
-  // Truncate markdown to fit model context
-  const truncated = smartTruncate(markdown, 2000);
+  // Truncate markdown aggressively to fit small model context windows
+  // 1200 chars ≈ 300-400 tokens, leaving room for prompt template + output
+  const truncated = smartTruncate(markdown, 1200);
 
   const prompt = buildGeoAnalysisPrompt({ url, markdown: truncated, baseUrl });
 
   onProgress?.(`Analyzing: ${url}`);
 
-  const raw = await chatCompletion(SYSTEM_PROMPT, prompt);
+  let raw: string;
+  try {
+    raw = await chatCompletion(SYSTEM_PROMPT, prompt);
+  } catch (err) {
+    // Inference failed (timeout, GPU error, etc.) — use defaults
+    onProgress?.(`Inference failed for ${url}: ${err instanceof Error ? err.message : 'unknown'}`);
+    return buildDefaultResult({}, url, markdown);
+  }
+
+  if (!raw || raw.trim().length < 10) {
+    onProgress?.(`Empty response for: ${url}`);
+    return buildDefaultResult({}, url, markdown);
+  }
 
   // Strategy 1: Score-line regex parsing (primary)
   const parsed = parseScoreResponse(raw, url, markdown);
@@ -46,8 +59,6 @@ export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPag
     if (validated.success) {
       return validated.data;
     }
-    // Even if Zod validation fails, score-line parsing found enough data
-    // Fill in defaults for missing fields
     return buildDefaultResult(parsed, url, markdown);
   }
 
