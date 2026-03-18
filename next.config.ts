@@ -1,7 +1,11 @@
 import type { NextConfig } from 'next';
 
+const isGhPages = process.env.GITHUB_ACTIONS === 'true';
+
 const nextConfig: NextConfig = {
   output: 'export',
+  basePath: isGhPages ? '/innotekseo-webllm' : '',
+  assetPrefix: isGhPages ? '/innotekseo-webllm/' : '',
   webpack: (config) => {
     // Resolve .js imports to .ts files (ESM compatibility)
     config.resolve.extensionAlias = {
