@@ -97,6 +97,52 @@ function parseHtmlToMarkdown(
 }
 
 /**
+ * Adaptive CORS proxy selector.
+ *
+ * Tracks consecutive failures per proxy. After FAILOVER_THRESHOLD
+ * consecutive failures on the active proxy, switches all future
+ * requests to the fallback. Resets the streak on any success so the
+ * primary can recover if it comes back online mid-crawl.
+ */
+const FAILOVER_THRESHOLD = 3;
+
+class ProxySelector {
+  private activeProxy: string;
+  private fallbackProxy: string;
+  private consecutiveFailures = 0;
+  private switched = false;
+
+  constructor(primary: string, fallback: string) {
+    this.activeProxy = primary;
+    this.fallbackProxy = fallback;
+  }
+
+  /** The proxy that should be tried first for the next request. */
+  get current(): string {
+    return this.activeProxy;
+  }
+
+  /** The other proxy (for per-request fallback before the global switch). */
+  get fallback(): string | null {
+    return this.switched ? null : this.fallbackProxy;
+  }
+
+  recordSuccess(): void {
+    this.consecutiveFailures = 0;
+  }
+
+  recordFailure(): void {
+    this.consecutiveFailures++;
+    if (!this.switched && this.consecutiveFailures >= FAILOVER_THRESHOLD) {
+      // Swap active ↔ fallback for all remaining requests
+      [this.activeProxy, this.fallbackProxy] = [this.fallbackProxy, this.activeProxy];
+      this.consecutiveFailures = 0;
+      this.switched = true;
+    }
+  }
+}
+
+/**
  * Crawl a website from the browser using CORS proxy.
  *
  * BFS traversal with configurable page limit, concurrency control,
@@ -114,6 +160,7 @@ export async function crawlFromBrowser(
     signal,
   } = options;
 
+  const proxy = new ProxySelector(corsProxy, FALLBACK_CORS_PROXY);
   const rateLimiter = new DomainRateLimiter(300);
   const concurrency = pLimit(3);
   const visited = new Set<string>();
@@ -146,13 +193,20 @@ export async function crawlFromBrowser(
           const html = await withRetry(
             async () => {
               try {
-                return await fetchViaProxy(url, corsProxy, signal);
-              } catch {
-                // Try fallback proxy
-                if (corsProxy !== FALLBACK_CORS_PROXY) {
-                  return await fetchViaProxy(url, FALLBACK_CORS_PROXY, signal);
+                const result = await fetchViaProxy(url, proxy.current, signal);
+                proxy.recordSuccess();
+                return result;
+              } catch (primaryErr) {
+                proxy.recordFailure();
+                // Try per-request fallback (if we haven't globally switched yet)
+                const fallback = proxy.fallback;
+                if (fallback) {
+                  const result = await fetchViaProxy(url, fallback, signal);
+                  // Fallback worked — success resets the primary streak so
+                  // the adaptive switch can still accumulate if primary keeps failing
+                  return result;
                 }
-                throw new Error(`Failed to fetch ${url}`);
+                throw primaryErr;
               }
             },
             { maxRetries: 1, baseDelay: 1000 },
