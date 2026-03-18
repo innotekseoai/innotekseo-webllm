@@ -2,7 +2,8 @@
  * WebLLM engine singleton
  *
  * Manages browser-side GPU inference via @mlc-ai/web-llm.
- * Models are automatically cached in IndexedDB by the WebLLM runtime.
+ * Models are automatically cached in Cache Storage by the WebLLM runtime.
+ * Provides download-only mode, cache checking, and per-model deletion.
  */
 
 import type { MLCEngine } from '@mlc-ai/web-llm';
@@ -11,23 +12,95 @@ export interface WebLLMModel {
   id: string;
   label: string;
   sizeHint: string;
+  vramMB: number;
+  tags: string[];
 }
 
+/**
+ * Curated model list — small instruction-following models that work
+ * well for GEO scoring. Ordered by quality/size tradeoff.
+ */
 export const AVAILABLE_MODELS: WebLLMModel[] = [
+  // -- Tiny: <500MB VRAM, fast on any GPU --
+  {
+    id: 'SmolLM2-135M-Instruct-q0f16-MLC',
+    label: 'SmolLM2 135M',
+    sizeHint: '~140MB download',
+    vramMB: 360,
+    tags: ['tiny', 'fast'],
+  },
+  {
+    id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
+    label: 'SmolLM2 360M',
+    sizeHint: '~200MB download',
+    vramMB: 376,
+    tags: ['tiny', 'fast'],
+  },
+  // -- Small: 500MB–1GB VRAM --
+  {
+    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+    label: 'Qwen 2.5 0.5B',
+    sizeHint: '~350MB download',
+    vramMB: 945,
+    tags: ['small'],
+  },
   {
     id: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
-    label: 'Qwen 2.5 0.5B (Fast)',
-    sizeHint: '~350MB',
+    label: 'Qwen 2.5 0.5B (f32)',
+    sizeHint: '~400MB download',
+    vramMB: 1060,
+    tags: ['small'],
   },
+  {
+    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+    label: 'Llama 3.2 1B',
+    sizeHint: '~600MB download',
+    vramMB: 879,
+    tags: ['small'],
+  },
+  // -- Medium: 1–2GB VRAM, best quality for the size --
+  {
+    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+    label: 'Qwen 2.5 1.5B',
+    sizeHint: '~900MB download',
+    vramMB: 1630,
+    tags: ['medium', 'recommended'],
+  },
+  {
+    id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
+    label: 'SmolLM2 1.7B',
+    sizeHint: '~1GB download',
+    vramMB: 1774,
+    tags: ['medium'],
+  },
+  {
+    id: 'Llama-3.2-1B-Instruct-q4f32_1-MLC',
+    label: 'Llama 3.2 1B (f32)',
+    sizeHint: '~800MB download',
+    vramMB: 1129,
+    tags: ['medium'],
+  },
+  // -- Large: 2–3GB VRAM, highest quality --
   {
     id: 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
-    label: 'Qwen 2.5 1.5B (Recommended)',
-    sizeHint: '~1GB',
+    label: 'Qwen 2.5 1.5B (f32)',
+    sizeHint: '~1.2GB download',
+    vramMB: 1889,
+    tags: ['large'],
   },
   {
-    id: 'SmolLM2-360M-Instruct-q4f32_1-MLC',
-    label: 'SmolLM2 360M (Smallest)',
-    sizeHint: '~200MB',
+    id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
+    label: 'Llama 3.2 3B',
+    sizeHint: '~1.8GB download',
+    vramMB: 2264,
+    tags: ['large'],
+  },
+  {
+    id: 'Phi-3.5-mini-instruct-q4f16_1-MLC-1k',
+    label: 'Phi 3.5 Mini (1k ctx)',
+    sizeHint: '~2GB download',
+    vramMB: 2520,
+    tags: ['large'],
   },
 ];
 
@@ -43,7 +116,52 @@ export function supportsWebGPU(): boolean {
 }
 
 /**
- * Load a WebLLM model. Downloads on first use, instant from cache after.
+ * Check if a model is already downloaded in the browser cache.
+ */
+export async function isModelCached(modelId: string): Promise<boolean> {
+  try {
+    const { hasModelInCache } = await import('@mlc-ai/web-llm');
+    return await hasModelInCache(modelId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete a specific model from the browser cache.
+ */
+export async function deleteModelFromCache(modelId: string): Promise<void> {
+  const { deleteModelInCache } = await import('@mlc-ai/web-llm');
+  await deleteModelInCache(modelId);
+}
+
+/**
+ * Download a model to the browser cache without keeping it loaded.
+ *
+ * Loads the engine to trigger the download, then immediately unloads
+ * to free GPU memory. The weights remain in Cache Storage.
+ */
+export async function downloadModel(
+  modelId: string,
+  onProgress?: (progress: { text: string; progress: number }) => void,
+): Promise<void> {
+  const { CreateMLCEngine } = await import('@mlc-ai/web-llm');
+
+  const tempEngine = await CreateMLCEngine(modelId, {
+    initProgressCallback: (report) => {
+      onProgress?.({
+        text: report.text,
+        progress: report.progress,
+      });
+    },
+  });
+
+  // Unload engine but weights stay cached
+  await tempEngine.unload();
+}
+
+/**
+ * Load a WebLLM model for inference. Downloads on first use, instant from cache.
  */
 export async function loadModel(
   modelId: string,
@@ -51,12 +169,10 @@ export async function loadModel(
 ): Promise<void> {
   if (engine && currentModelId === modelId) return;
 
-  // Unload previous if different
   if (engine) {
     await unloadModel();
   }
 
-  // Dynamic import to avoid SSR issues
   const { CreateMLCEngine } = await import('@mlc-ai/web-llm');
 
   engine = await CreateMLCEngine(modelId, {
@@ -72,7 +188,7 @@ export async function loadModel(
 }
 
 /**
- * Unload the current model and free resources.
+ * Unload the current model and free GPU memory.
  */
 export async function unloadModel(): Promise<void> {
   if (engine) {
@@ -82,23 +198,14 @@ export async function unloadModel(): Promise<void> {
   }
 }
 
-/**
- * Get the current engine instance.
- */
 export function getEngine(): MLCEngine | null {
   return engine;
 }
 
-/**
- * Check if a model is currently loaded.
- */
 export function isModelLoaded(): boolean {
   return engine !== null;
 }
 
-/**
- * Get the currently loaded model ID.
- */
 export function getCurrentModelId(): string | null {
   return currentModelId;
 }
