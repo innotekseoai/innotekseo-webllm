@@ -49,8 +49,11 @@ export function useWebLLM() {
     downloadingModel: null,
   });
 
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // Check WebGPU support + cache status on mount
   useEffect(() => {

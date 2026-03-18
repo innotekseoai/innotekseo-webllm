@@ -12,7 +12,7 @@ export function CrawlForm() {
   const router = useRouter();
   const webllm = useWebLLM();
   const [url, setUrl] = useState('');
-  const [limit, setLimit] = useState(50);
+  const [limit, setLimit] = useState(5);
   const [analyze, setAnalyze] = useState(true);
   const [selectedModel, setSelectedModel] = useState(
     webllm.currentModel ?? webllm.availableModels[5]?.id ?? webllm.availableModels[0]?.id ?? '',

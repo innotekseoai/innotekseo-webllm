@@ -67,7 +67,7 @@ export async function createCrawl(
   baseUrl: string,
   options: { limit?: number; analyze?: boolean },
 ): Promise<number> {
-  const { limit = 50 } = options;
+  const { limit = 5 } = options;
 
   const crawlId = await db.crawls.add({
     baseUrl,
@@ -98,9 +98,12 @@ export function useCrawler() {
   });
 
   const abortRef = useRef<AbortController | null>(null);
-  const mountedRef = useRef(true);
+  const mountedRef = useRef(false);
   const runningRef = useRef(false);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const safeSetState = useCallback((updater: (s: CrawlerState) => CrawlerState) => {
     if (mountedRef.current) setState(updater);
@@ -114,10 +117,13 @@ export function useCrawler() {
     baseUrl: string,
     options: { limit?: number; analyze?: boolean },
   ): Promise<void> => {
-    const { limit = 50, analyze = true } = options;
+    const { limit = 5, analyze = true } = options;
 
-    // Use ref for guard — avoids stale closure from useCallback dependency on state.status
-    if (runningRef.current) return;
+    console.log('[useCrawler] executeCrawl called: crawlId=%d, runningRef=%s', crawlId, runningRef.current);
+    if (runningRef.current) {
+      console.log('[useCrawler] SKIPPED — already running');
+      return;
+    }
     runningRef.current = true;
 
     safeSetState(() => ({

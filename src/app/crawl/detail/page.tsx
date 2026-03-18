@@ -44,18 +44,19 @@ function CrawlDetailContent() {
   const startedRef = useRef(false);
 
   // Auto-start crawl when we land on a pending crawl (navigated from form)
-  // Uses startedRef to guarantee single execution regardless of effect re-runs
   useEffect(() => {
     if (!data?.crawl || startedRef.current) return;
-    if (data.crawl.status === 'pending') {
+    const { status, id, baseUrl } = data.crawl;
+    console.log('[crawl-detail] effect: status=%s, id=%d, startedRef=%s', status, id, startedRef.current);
+    if (status === 'pending') {
       startedRef.current = true;
-      crawler.executeCrawl(data.crawl.id!, data.crawl.baseUrl, {
+      console.log('[crawl-detail] calling executeCrawl for id=%d', id);
+      crawler.executeCrawl(id!, baseUrl, {
         limit: limitParam,
         analyze: analyzeParam,
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.crawl?.status]);
+  }, [data?.crawl, crawler.executeCrawl, limitParam, analyzeParam]);
 
   const handleResumeAnalysis = useCallback(async () => {
     if (!data?.crawl || !webllm.isReady) return;
@@ -244,6 +245,13 @@ function CrawlDetailContent() {
               baseUrl={crawl.baseUrl}
             />
           )}
+
+          {/* Debug — always visible */}
+          <div className="text-[10px] text-muted/50 bg-surface2 rounded p-2 font-mono">
+            hook: {crawler.status} | id: {crawler.crawlId} | db: {crawl.id} ({crawl.status}) |
+            owned: {String(crawlerOwned)} | log: {crawler.inferenceLog.length} |
+            pages: {pages.length} | analyses: {analyses.length}
+          </div>
 
           {/* Inference log — live streaming output from WebLLM */}
           {crawler.inferenceLog.length > 0 && (

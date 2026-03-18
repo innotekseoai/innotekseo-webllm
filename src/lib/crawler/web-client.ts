@@ -171,7 +171,7 @@ export async function crawlFromBrowser(
   options: WebCrawlOptions = {},
 ): Promise<WebCrawlPage[]> {
   const {
-    limit = 50,
+    limit = 5,
     corsProxy = localStorage.getItem('corsProxy') || DEFAULT_CORS_PROXY,
     onPage,
     onProgress,
