@@ -33,6 +33,9 @@ export interface WebCrawlOptions {
 const DEFAULT_CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 const FALLBACK_CORS_PROXY = 'https://corsproxy.io/?url=';
 
+/** Per-request timeout in ms — prevents indefinite hangs on slow proxies */
+const FETCH_TIMEOUT_MS = 15_000;
+
 const turndown = new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced',
@@ -43,22 +46,45 @@ turndown.remove(['script', 'style', 'nav', 'footer', 'noscript', 'iframe']);
 
 const parser = typeof DOMParser !== 'undefined' ? new DOMParser() : null;
 
+/**
+ * Fetch with a per-request timeout. Combines the caller's AbortSignal
+ * (for user cancellation) with a timeout signal (for hung requests).
+ */
 async function fetchViaProxy(
   url: string,
   corsProxy: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const proxyUrl = `${corsProxy}${encodeURIComponent(url)}`;
-  const res = await fetch(proxyUrl, {
-    signal,
-    headers: { 'Accept': 'text/html' },
-  });
 
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} for ${url}`);
+  // Create a timeout abort that fires after FETCH_TIMEOUT_MS
+  const timeoutCtrl = new AbortController();
+  const timer = setTimeout(() => timeoutCtrl.abort(), FETCH_TIMEOUT_MS);
+
+  // Combine user cancel signal with timeout signal
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutCtrl.signal])
+    : timeoutCtrl.signal;
+
+  try {
+    const res = await fetch(proxyUrl, {
+      signal: combinedSignal,
+      headers: { 'Accept': 'text/html' },
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} for ${url}`);
+    }
+
+    return await res.text();
+  } catch (err) {
+    if (timeoutCtrl.signal.aborted && !signal?.aborted) {
+      throw new Error(`Timeout after ${FETCH_TIMEOUT_MS / 1000}s for ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-
-  return res.text();
 }
 
 function parseHtmlToMarkdown(
@@ -69,26 +95,36 @@ function parseHtmlToMarkdown(
 
   const doc = parser.parseFromString(html, 'text/html');
 
-  // Extract metadata before Readability modifies the DOM
+  // Extract metadata
   const title = doc.querySelector('title')?.textContent?.trim() ?? null;
   const description = doc.querySelector('meta[name="description"]')?.getAttribute('content') ?? null;
 
   // Discover links before Readability strips them
   const links = discoverLinks(doc, url);
 
-  // Clone doc for Readability (it mutates the DOM)
-  const clone = doc.cloneNode(true) as Document;
-  const article = new Readability(clone, { charThreshold: 50 }).parse();
+  // Clone only <body> for Readability (much cheaper than full doc clone)
+  const bodyClone = doc.body?.cloneNode(true);
+  let article: ReturnType<Readability['parse']> = null;
+  if (bodyClone) {
+    const minimalDoc = document.implementation.createHTMLDocument('');
+    minimalDoc.body.replaceWith(bodyClone);
+    // Copy <head> metadata Readability needs (title, meta tags)
+    const headTitle = doc.querySelector('title');
+    if (headTitle) {
+      const t = minimalDoc.createElement('title');
+      t.textContent = headTitle.textContent;
+      minimalDoc.head.appendChild(t);
+    }
+    article = new Readability(minimalDoc, { charThreshold: 50 }).parse();
+  }
 
   let markdown: string;
   if (article?.content) {
     markdown = turndown.turndown(article.content);
-    // Prepend title if Readability found one
     if (article.title && !markdown.startsWith('# ')) {
       markdown = `# ${article.title}\n\n${markdown}`;
     }
   } else {
-    // Fallback: convert body directly
     const body = doc.body?.innerHTML ?? '';
     markdown = turndown.turndown(body);
   }
@@ -101,8 +137,7 @@ function parseHtmlToMarkdown(
  *
  * Tracks consecutive failures per proxy. After FAILOVER_THRESHOLD
  * consecutive failures on the active proxy, switches all future
- * requests to the fallback. Resets the streak on any success so the
- * primary can recover if it comes back online mid-crawl.
+ * requests to the fallback. Resets the streak on any success.
  */
 const FAILOVER_THRESHOLD = 3;
 
@@ -117,12 +152,10 @@ class ProxySelector {
     this.fallbackProxy = fallback;
   }
 
-  /** The proxy that should be tried first for the next request. */
   get current(): string {
     return this.activeProxy;
   }
 
-  /** The other proxy (for per-request fallback before the global switch). */
   get fallback(): string | null {
     return this.switched ? null : this.fallbackProxy;
   }
@@ -134,7 +167,6 @@ class ProxySelector {
   recordFailure(): void {
     this.consecutiveFailures++;
     if (!this.switched && this.consecutiveFailures >= FAILOVER_THRESHOLD) {
-      // Swap active ↔ fallback for all remaining requests
       [this.activeProxy, this.fallbackProxy] = [this.fallbackProxy, this.activeProxy];
       this.consecutiveFailures = 0;
       this.switched = true;
@@ -162,12 +194,12 @@ export async function crawlFromBrowser(
 
   const proxy = new ProxySelector(corsProxy, FALLBACK_CORS_PROXY);
   const rateLimiter = new DomainRateLimiter(300);
-  const concurrency = pLimit(3);
+  // Fix #6: reduce concurrency from 3→2 to lower timeout pressure
+  const concurrency = pLimit(2);
   const visited = new Set<string>();
   const queue: string[] = [];
   const results: WebCrawlPage[] = [];
 
-  // Normalize and seed the starting URL
   const seedUrl = normalizeUrl(baseUrl) ?? baseUrl;
   queue.push(seedUrl);
   visited.add(seedUrl);
@@ -179,8 +211,7 @@ export async function crawlFromBrowser(
   while (queue.length > 0 && results.length < limit) {
     if (signal?.aborted) break;
 
-    // Take a batch from queue
-    const batchSize = Math.min(queue.length, limit - results.length, 3);
+    const batchSize = Math.min(queue.length, limit - results.length, 2);
     const batch = queue.splice(0, batchSize);
 
     const tasks = batch.map((url) =>
@@ -198,12 +229,9 @@ export async function crawlFromBrowser(
                 return result;
               } catch (primaryErr) {
                 proxy.recordFailure();
-                // Try per-request fallback (if we haven't globally switched yet)
                 const fallback = proxy.fallback;
                 if (fallback) {
                   const result = await fetchViaProxy(url, fallback, signal);
-                  // Fallback worked — success resets the primary streak so
-                  // the adaptive switch can still accumulate if primary keeps failing
                   return result;
                 }
                 throw primaryErr;
@@ -214,7 +242,7 @@ export async function crawlFromBrowser(
 
           const { markdown, title, description, links } = parseHtmlToMarkdown(html, url);
 
-          if (markdown.length < 50) return; // Skip empty pages
+          if (markdown.length < 50) return;
 
           const page: WebCrawlPage = {
             url,
@@ -231,7 +259,6 @@ export async function crawlFromBrowser(
           const progress = Math.min(95, Math.round((results.length / limit) * 100));
           onProgress?.(`Crawled: ${url}`, progress);
 
-          // Add new links to queue
           for (const link of links) {
             if (!visited.has(link) && results.length + queue.length < limit * 2) {
               visited.add(link);

@@ -1,11 +1,10 @@
 /**
  * React hook orchestrating the full crawl + analyze pipeline
  *
- * Split into two phases:
- * - createCrawl(): instant — creates Dexie record, returns crawlId (form can navigate immediately)
- * - executeCrawl(): async — runs the actual crawl + analysis, writes progress to Dexie
- *
- * The detail page calls executeCrawl() on mount, useLiveQuery reacts to Dexie writes.
+ * Performance optimizations:
+ * - Throttled DB writes: crawl count updated every 3 pages instead of every page
+ * - Main-thread yielding: setTimeout(0) between AI analyses to keep UI responsive
+ * - Batched state updates: progress updates throttled to avoid render storms
  */
 
 'use client';
@@ -26,6 +25,9 @@ export interface CrawlerState {
   pageCount: number;
   analyzedCount: number;
 }
+
+/** Yield main thread so React can process pending renders and user input */
+const yieldThread = () => new Promise<void>((r) => setTimeout(r, 0));
 
 /**
  * Create a crawl record in Dexie. Returns the crawlId instantly.
@@ -68,14 +70,12 @@ export function useCrawler() {
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  /** Safe setState that no-ops if unmounted */
   const safeSetState = useCallback((updater: (s: CrawlerState) => CrawlerState) => {
     if (mountedRef.current) setState(updater);
   }, []);
 
   /**
    * Execute crawl + optional analysis for an existing crawl record.
-   * Call this from the detail page after navigation.
    */
   const executeCrawl = useCallback(async (
     crawlId: number,
@@ -84,7 +84,6 @@ export function useCrawler() {
   ): Promise<void> => {
     const { limit = 50, analyze = true } = options;
 
-    // Guard: don't re-execute if already running
     if (state.status === 'crawling' || state.status === 'analyzing') return;
 
     safeSetState(() => ({
@@ -101,6 +100,8 @@ export function useCrawler() {
     try {
       await db.crawls.update(crawlId, { status: 'crawling' });
 
+      let pagesInserted = 0;
+
       // Phase 1: Crawl
       const pages = await crawlFromBrowser(baseUrl, {
         limit,
@@ -116,7 +117,12 @@ export function useCrawler() {
             status: 'crawled',
           });
 
-          await db.crawls.update(crawlId, { pagesCrawled: index + 1 });
+          pagesInserted++;
+
+          // Throttle: update crawl count every 3 pages to reduce Dexie writes
+          if (pagesInserted % 3 === 0 || pagesInserted === 1) {
+            await db.crawls.update(crawlId, { pagesCrawled: pagesInserted });
+          }
 
           safeSetState((s) => ({
             ...s,
@@ -135,12 +141,13 @@ export function useCrawler() {
         return;
       }
 
+      // Final count update
       await db.crawls.update(crawlId, {
         pagesCrawled: pages.length,
         status: analyze && isModelLoaded() ? 'analyzing' : 'completed',
       });
 
-      // Phase 2: Analyze (if model is loaded)
+      // Phase 2: Analyze
       if (analyze && isModelLoaded()) {
         safeSetState((s) => ({ ...s, status: 'analyzing', message: 'Starting AI analysis...', progress: 50 }));
 
@@ -152,6 +159,9 @@ export function useCrawler() {
 
           const page = crawlPages[i];
           if (page.status === 'analyzed') continue;
+
+          // Yield main thread before each inference so UI stays responsive
+          await yieldThread();
 
           await db.crawlPages.update(page.id!, { status: 'analyzing' });
 
@@ -165,28 +175,30 @@ export function useCrawler() {
               },
             });
 
-            await db.pageAnalyses.add({
-              crawlId,
-              crawlPageId: page.id!,
-              url: page.url,
-              entityClarityScore: result.entity_clarity_score,
-              contentQualityScore: result.content_quality_score,
-              semanticStructureScore: result.semantic_structure_score,
-              entityRichnessScore: result.entity_richness_score,
-              citationReadinessScore: result.citation_readiness_score,
-              technicalSeoScore: result.technical_seo_score,
-              userIntentAlignmentScore: result.user_intent_alignment_score,
-              trustSignalsScore: result.trust_signals_score,
-              authorityScore: result.authority_score,
-              factDensityCount: result.fact_density_count,
-              wordCount: result.word_count,
-              jsonLd: result.json_ld,
-              llmsTxtEntry: result.llms_txt_entry,
-              geoRecommendations: JSON.stringify(result.geo_recommendations),
-              scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+            // Batch the analysis insert + page status update in one transaction
+            await db.transaction('rw', [db.pageAnalyses, db.crawlPages], async () => {
+              await db.pageAnalyses.add({
+                crawlId,
+                crawlPageId: page.id!,
+                url: page.url,
+                entityClarityScore: result.entity_clarity_score,
+                contentQualityScore: result.content_quality_score,
+                semanticStructureScore: result.semantic_structure_score,
+                entityRichnessScore: result.entity_richness_score,
+                citationReadinessScore: result.citation_readiness_score,
+                technicalSeoScore: result.technical_seo_score,
+                userIntentAlignmentScore: result.user_intent_alignment_score,
+                trustSignalsScore: result.trust_signals_score,
+                authorityScore: result.authority_score,
+                factDensityCount: result.fact_density_count,
+                wordCount: result.word_count,
+                jsonLd: result.json_ld,
+                llmsTxtEntry: result.llms_txt_entry,
+                geoRecommendations: JSON.stringify(result.geo_recommendations),
+                scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+              });
+              await db.crawlPages.update(page.id!, { status: 'analyzed' });
             });
-
-            await db.crawlPages.update(page.id!, { status: 'analyzed' });
 
             pageResults.push({ page_url: page.url, result });
             safeSetState((s) => ({
@@ -197,9 +209,11 @@ export function useCrawler() {
           } catch {
             await db.crawlPages.update(page.id!, { status: 'failed' });
           }
+
+          // Yield again after DB writes so useLiveQuery renders can flush
+          await yieldThread();
         }
 
-        // Aggregate results
         if (pageResults.length > 0) {
           const aggregated = aggregateResults(baseUrl, pageResults);
           await db.crawls.update(crawlId, {
@@ -271,6 +285,7 @@ export function useCrawler() {
         if (abortRef.current.signal.aborted) break;
         const page = unanalyzed[i];
 
+        await yieldThread();
         await db.crawlPages.update(page.id!, { status: 'analyzing' });
 
         try {
@@ -281,28 +296,30 @@ export function useCrawler() {
             onProgress: (msg) => safeSetState((s) => ({ ...s, message: msg })),
           });
 
-          await db.pageAnalyses.add({
-            crawlId,
-            crawlPageId: page.id!,
-            url: page.url,
-            entityClarityScore: result.entity_clarity_score,
-            contentQualityScore: result.content_quality_score,
-            semanticStructureScore: result.semantic_structure_score,
-            entityRichnessScore: result.entity_richness_score,
-            citationReadinessScore: result.citation_readiness_score,
-            technicalSeoScore: result.technical_seo_score,
-            userIntentAlignmentScore: result.user_intent_alignment_score,
-            trustSignalsScore: result.trust_signals_score,
-            authorityScore: result.authority_score,
-            factDensityCount: result.fact_density_count,
-            wordCount: result.word_count,
-            jsonLd: result.json_ld,
-            llmsTxtEntry: result.llms_txt_entry,
-            geoRecommendations: JSON.stringify(result.geo_recommendations),
-            scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+          await db.transaction('rw', [db.pageAnalyses, db.crawlPages], async () => {
+            await db.pageAnalyses.add({
+              crawlId,
+              crawlPageId: page.id!,
+              url: page.url,
+              entityClarityScore: result.entity_clarity_score,
+              contentQualityScore: result.content_quality_score,
+              semanticStructureScore: result.semantic_structure_score,
+              entityRichnessScore: result.entity_richness_score,
+              citationReadinessScore: result.citation_readiness_score,
+              technicalSeoScore: result.technical_seo_score,
+              userIntentAlignmentScore: result.user_intent_alignment_score,
+              trustSignalsScore: result.trust_signals_score,
+              authorityScore: result.authority_score,
+              factDensityCount: result.fact_density_count,
+              wordCount: result.word_count,
+              jsonLd: result.json_ld,
+              llmsTxtEntry: result.llms_txt_entry,
+              geoRecommendations: JSON.stringify(result.geo_recommendations),
+              scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+            });
+            await db.crawlPages.update(page.id!, { status: 'analyzed' });
           });
 
-          await db.crawlPages.update(page.id!, { status: 'analyzed' });
           pageResults.push({ page_url: page.url, result });
 
           safeSetState((s) => ({
@@ -313,6 +330,8 @@ export function useCrawler() {
         } catch {
           await db.crawlPages.update(page.id!, { status: 'failed' });
         }
+
+        await yieldThread();
       }
 
       if (pageResults.length > 0) {

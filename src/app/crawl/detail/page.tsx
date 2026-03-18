@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
+import { Suspense, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/header';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
@@ -83,11 +83,15 @@ function CrawlDetailContent() {
   const isComplete = effectiveStatus === 'completed';
   const progress = crawler.crawlId === crawl.id ? crawler.progress : (isComplete ? 100 : 0);
 
-  // Build terminal lines from pages (reactive via useLiveQuery)
-  const lines: ConsoleLine[] = pages.map((p, i) => ({
-    type: 'page' as const,
-    data: { url: p.url, title: p.title ?? '', charCount: p.charCount, index: i },
-  }));
+  // Memoize terminal lines — only rebuild when page count changes, not on every Dexie write
+  const lines: ConsoleLine[] = useMemo(
+    () => pages.map((p, i) => ({
+      type: 'page' as const,
+      data: { url: p.url, title: p.title ?? '', charCount: p.charCount, index: i },
+    })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pages.length],
+  );
 
   const steps: Array<{ label: string; status: 'pending' | 'active' | 'completed' | 'error'; detail?: string }> = [
     {
