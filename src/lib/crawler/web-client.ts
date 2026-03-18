@@ -47,8 +47,8 @@ turndown.remove(['script', 'style', 'nav', 'footer', 'noscript', 'iframe']);
 const parser = typeof DOMParser !== 'undefined' ? new DOMParser() : null;
 
 /**
- * Fetch with a per-request timeout. Combines the caller's AbortSignal
- * (for user cancellation) with a timeout signal (for hung requests).
+ * Fetch with a per-request timeout. Uses Promise.race instead of
+ * AbortSignal.any (which isn't available in older browsers).
  */
 async function fetchViaProxy(
   url: string,
@@ -57,34 +57,20 @@ async function fetchViaProxy(
 ): Promise<string> {
   const proxyUrl = `${corsProxy}${encodeURIComponent(url)}`;
 
-  // Create a timeout abort that fires after FETCH_TIMEOUT_MS
-  const timeoutCtrl = new AbortController();
-  const timer = setTimeout(() => timeoutCtrl.abort(), FETCH_TIMEOUT_MS);
+  // Use Promise.race for timeout — works in all browsers
+  const fetchPromise = fetch(proxyUrl, {
+    signal,
+    headers: { 'Accept': 'text/html' },
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.text();
+  });
 
-  // Combine user cancel signal with timeout signal
-  const combinedSignal = signal
-    ? AbortSignal.any([signal, timeoutCtrl.signal])
-    : timeoutCtrl.signal;
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timeout after ${FETCH_TIMEOUT_MS / 1000}s`)), FETCH_TIMEOUT_MS),
+  );
 
-  try {
-    const res = await fetch(proxyUrl, {
-      signal: combinedSignal,
-      headers: { 'Accept': 'text/html' },
-    });
-
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} for ${url}`);
-    }
-
-    return await res.text();
-  } catch (err) {
-    if (timeoutCtrl.signal.aborted && !signal?.aborted) {
-      throw new Error(`Timeout after ${FETCH_TIMEOUT_MS / 1000}s for ${url}`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  return Promise.race([fetchPromise, timeoutPromise]);
 }
 
 function parseHtmlToMarkdown(
