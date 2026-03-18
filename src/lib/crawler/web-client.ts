@@ -30,8 +30,19 @@ export interface WebCrawlOptions {
   signal?: AbortSignal;
 }
 
-const DEFAULT_CORS_PROXY = 'https://api.allorigins.win/raw?url=';
-const FALLBACK_CORS_PROXY = 'https://corsproxy.io/?url=';
+const CORS_PROXIES = [
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?url=',
+  'https://api.codetabs.com/v1/proxy?quest=',
+];
+
+function getSavedProxy(): string | null {
+  try {
+    return localStorage.getItem('corsProxy') || null;
+  } catch {
+    return null;
+  }
+}
 
 /** Per-request timeout in ms — prevents indefinite hangs on slow proxies */
 const FETCH_TIMEOUT_MS = 15_000;
@@ -121,29 +132,27 @@ function parseHtmlToMarkdown(
 /**
  * Adaptive CORS proxy selector.
  *
- * Tracks consecutive failures per proxy. After FAILOVER_THRESHOLD
- * consecutive failures on the active proxy, switches all future
- * requests to the fallback. Resets the streak on any success.
+ * Cycles through a list of proxies. After FAILOVER_THRESHOLD consecutive
+ * failures, advances to the next proxy. Resets streak on success.
  */
-const FAILOVER_THRESHOLD = 3;
+const FAILOVER_THRESHOLD = 2;
 
 class ProxySelector {
-  private activeProxy: string;
-  private fallbackProxy: string;
+  private proxies: string[];
+  private activeIndex = 0;
   private consecutiveFailures = 0;
-  private switched = false;
 
-  constructor(primary: string, fallback: string) {
-    this.activeProxy = primary;
-    this.fallbackProxy = fallback;
+  constructor(proxies: string[]) {
+    this.proxies = proxies;
   }
 
   get current(): string {
-    return this.activeProxy;
+    return this.proxies[this.activeIndex];
   }
 
-  get fallback(): string | null {
-    return this.switched ? null : this.fallbackProxy;
+  /** Return other proxies to try as per-request fallbacks */
+  get fallbacks(): string[] {
+    return this.proxies.filter((_, i) => i !== this.activeIndex);
   }
 
   recordSuccess(): void {
@@ -152,10 +161,9 @@ class ProxySelector {
 
   recordFailure(): void {
     this.consecutiveFailures++;
-    if (!this.switched && this.consecutiveFailures >= FAILOVER_THRESHOLD) {
-      [this.activeProxy, this.fallbackProxy] = [this.fallbackProxy, this.activeProxy];
+    if (this.consecutiveFailures >= FAILOVER_THRESHOLD && this.proxies.length > 1) {
+      this.activeIndex = (this.activeIndex + 1) % this.proxies.length;
       this.consecutiveFailures = 0;
-      this.switched = true;
     }
   }
 }
@@ -172,15 +180,17 @@ export async function crawlFromBrowser(
 ): Promise<WebCrawlPage[]> {
   const {
     limit = 5,
-    corsProxy = localStorage.getItem('corsProxy') || DEFAULT_CORS_PROXY,
+    corsProxy,
     onPage,
     onProgress,
     signal,
   } = options;
 
-  const proxy = new ProxySelector(corsProxy, FALLBACK_CORS_PROXY);
+  // Build proxy list: user-configured > defaults
+  const userProxy = corsProxy || getSavedProxy();
+  const proxyList = userProxy ? [userProxy, ...CORS_PROXIES] : [...CORS_PROXIES];
+  const proxy = new ProxySelector(proxyList);
   const rateLimiter = new DomainRateLimiter(300);
-  // Fix #6: reduce concurrency from 3→2 to lower timeout pressure
   const concurrency = pLimit(2);
   const visited = new Set<string>();
   const queue: string[] = [];
@@ -192,7 +202,7 @@ export async function crawlFromBrowser(
 
   let pageIndex = 0;
 
-  onProgress?.('Starting crawl...', 0);
+  onProgress?.(`Starting crawl via ${new URL(proxy.current).hostname}...`, 0);
 
   while (queue.length > 0 && results.length < limit) {
     if (signal?.aborted) break;
@@ -209,21 +219,23 @@ export async function crawlFromBrowser(
         try {
           const html = await withRetry(
             async () => {
+              // Try primary proxy
               try {
                 const result = await fetchViaProxy(url, proxy.current, signal);
                 proxy.recordSuccess();
                 return result;
               } catch (primaryErr) {
                 proxy.recordFailure();
-                const fallback = proxy.fallback;
-                if (fallback) {
-                  const result = await fetchViaProxy(url, fallback, signal);
-                  return result;
+                // Try each fallback proxy in order
+                for (const fallback of proxy.fallbacks) {
+                  try {
+                    return await fetchViaProxy(url, fallback, signal);
+                  } catch { /* try next */ }
                 }
                 throw primaryErr;
               }
             },
-            { maxRetries: 1, baseDelay: 1000 },
+            { maxRetries: 0 },
           );
 
           const { markdown, title, description, links } = parseHtmlToMarkdown(html, url);
@@ -263,6 +275,12 @@ export async function crawlFromBrowser(
     await Promise.all(tasks);
   }
 
-  onProgress?.(`Crawl complete: ${results.length} pages`, 100);
+  const failed = visited.size - results.length;
+  onProgress?.(
+    results.length > 0
+      ? `Crawl complete: ${results.length} pages${failed > 0 ? ` (${failed} failed)` : ''}`
+      : `Crawl failed: all ${visited.size} URLs failed. CORS proxy may be blocked.`,
+    100,
+  );
   return results;
 }
