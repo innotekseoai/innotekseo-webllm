@@ -14,10 +14,10 @@ import { GradeBreakdown } from '@/components/analysis/grade-breakdown';
 import { MetricBars } from '@/components/analysis/metric-bars';
 import { Recommendations } from '@/components/analysis/recommendations';
 import { PageScoreCell } from '@/components/crawl/page-score-cell';
-import { ArrowLeft, Copy, RotateCcw, Square, ArrowUpDown, Download } from 'lucide-react';
+import { ArrowLeft, Copy, RotateCcw, Square, ArrowUpDown, Download, ChevronDown, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { useCrawlDetail } from '@/hooks/useDb';
-import { useCrawler } from '@/hooks/useCrawler';
+import { useCrawler, type InferenceLogEntry } from '@/hooks/useCrawler';
 import { useWebLLM } from '@/hooks/useWebLLM';
 import { exportToJson, exportToCsv } from '@/lib/export/client-export';
 
@@ -46,12 +46,9 @@ function CrawlDetailContent() {
   // Auto-start crawl when we land on a pending crawl (navigated from form)
   useEffect(() => {
     if (!data?.crawl || startedRef.current) return;
-    const { status, id, baseUrl } = data.crawl;
-    console.log('[crawl-detail] effect: status=%s, id=%d, startedRef=%s', status, id, startedRef.current);
-    if (status === 'pending') {
+    if (data.crawl.status === 'pending') {
       startedRef.current = true;
-      console.log('[crawl-detail] calling executeCrawl for id=%d', id);
-      crawler.executeCrawl(id!, baseUrl, {
+      crawler.executeCrawl(data.crawl.id!, data.crawl.baseUrl, {
         limit: limitParam,
         analyze: analyzeParam,
       });
@@ -246,50 +243,9 @@ function CrawlDetailContent() {
             />
           )}
 
-          {/* Debug — always visible */}
-          <div className="text-[10px] text-muted/50 bg-surface2 rounded p-2 font-mono">
-            hook: {crawler.status} | id: {crawler.crawlId} | db: {crawl.id} ({crawl.status}) |
-            owned: {String(crawlerOwned)} | log: {crawler.inferenceLog.length} |
-            pages: {pages.length} | analyses: {analyses.length}
-          </div>
-
-          {/* Inference log — live streaming output from WebLLM */}
+          {/* Inference log — auto-collapses completed entries after 2 pages */}
           {crawler.inferenceLog.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>AI Inference Log</CardTitle>
-              </CardHeader>
-              <div className="max-h-80 overflow-y-auto space-y-3">
-                {crawler.inferenceLog.map((entry, idx) => (
-                  <div key={idx} className="border-b border-border/30 pb-2 last:border-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-accent truncate max-w-[60%]">{entry.url}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                        entry.status === 'streaming' ? 'text-yellow-400 bg-yellow-400/10' :
-                        entry.status === 'done' ? 'text-green-400 bg-green-400/10' :
-                        entry.status === 'failed' ? 'text-red-400 bg-red-400/10' :
-                        'text-muted bg-surface2'
-                      }`}>
-                        {entry.status === 'streaming' ? 'generating...' : entry.status}
-                      </span>
-                    </div>
-                    {entry.output && (
-                      <pre className="text-[11px] text-muted bg-[#0a0e17] rounded p-2 overflow-x-auto max-h-32 whitespace-pre-wrap font-mono leading-relaxed">
-                        {entry.output}
-                        {entry.status === 'streaming' && <span className="animate-pulse">|</span>}
-                      </pre>
-                    )}
-                    {entry.stats && (
-                      <div className="flex gap-4 mt-1 text-[10px] text-muted">
-                        <span>{entry.stats.tokensPerSec.toFixed(1)} tok/s</span>
-                        <span>{entry.stats.completionTokens} tokens</span>
-                        <span>{(entry.stats.elapsedMs / 1000).toFixed(1)}s</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Card>
+            <InferenceLog entries={crawler.inferenceLog} />
           )}
 
           {isComplete && sm && (
@@ -491,5 +447,118 @@ function CrawlDetailContent() {
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * Inference log with auto-collapsing completed entries.
+ * Only the currently streaming entry shows full output.
+ * Completed entries collapse to URL + stats, click to expand.
+ */
+function InferenceLog({ entries }: { entries: InferenceLogEntry[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new entries appear
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [entries.length]);
+
+  function toggleExpand(idx: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }
+
+  // Auto-collapse: entries that are done/failed and not the last one
+  const lastIdx = entries.length - 1;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>AI Inference Log</CardTitle>
+          <span className="text-xs text-muted">{entries.length} pages</span>
+        </div>
+      </CardHeader>
+      <div ref={logRef} className="max-h-64 overflow-y-auto space-y-1">
+        {entries.map((entry, idx) => {
+          const isLast = idx === lastIdx;
+          const isStreaming = entry.status === 'streaming';
+          // Show full output for: streaming entry, last entry, or user-expanded
+          const showOutput = isStreaming || (isLast && entry.output) || expanded.has(idx);
+          // Auto-collapse completed entries after first 2
+          const isCollapsed = !showOutput && idx < lastIdx && entries.length > 2;
+
+          const statusColor =
+            entry.status === 'streaming' ? 'text-yellow-400 bg-yellow-400/10' :
+            entry.status === 'done' ? 'text-green-400 bg-green-400/10' :
+            entry.status === 'failed' ? 'text-red-400 bg-red-400/10' :
+            'text-muted bg-surface2';
+
+          const path = (() => {
+            try { return new URL(entry.url).pathname; } catch { return entry.url; }
+          })();
+
+          if (isCollapsed) {
+            return (
+              <button
+                key={idx}
+                onClick={() => toggleExpand(idx)}
+                className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-surface2/50 transition-colors text-left"
+              >
+                <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
+                <span className="text-xs text-muted truncate flex-1">{path}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${statusColor}`}>
+                  {entry.status}
+                </span>
+                {entry.stats && (
+                  <span className="text-[10px] text-muted flex-shrink-0">
+                    {entry.stats.tokensPerSec.toFixed(0)} t/s
+                  </span>
+                )}
+              </button>
+            );
+          }
+
+          return (
+            <div key={idx} className="border-b border-border/20 pb-2 last:border-0">
+              <button
+                onClick={() => entry.status !== 'streaming' ? toggleExpand(idx) : undefined}
+                className="w-full flex items-center justify-between mb-1 text-left"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {entry.status !== 'streaming' && (
+                    <ChevronDown className="w-3 h-3 text-muted flex-shrink-0" />
+                  )}
+                  <span className="text-xs text-accent truncate">{path}</span>
+                </div>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${statusColor}`}>
+                  {isStreaming ? 'generating...' : entry.status}
+                </span>
+              </button>
+              {entry.output && (
+                <pre className="text-[11px] text-muted bg-[#0a0e17] rounded p-2 overflow-x-auto max-h-28 whitespace-pre-wrap font-mono leading-relaxed">
+                  {entry.output}
+                  {isStreaming && <span className="animate-pulse">|</span>}
+                </pre>
+              )}
+              {entry.stats && (
+                <div className="flex gap-3 mt-1 text-[10px] text-muted">
+                  <span>{entry.stats.tokensPerSec.toFixed(1)} tok/s</span>
+                  <span>{entry.stats.completionTokens} tokens</span>
+                  <span>{(entry.stats.elapsedMs / 1000).toFixed(1)}s</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }

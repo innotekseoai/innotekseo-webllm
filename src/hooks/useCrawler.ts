@@ -119,11 +119,7 @@ export function useCrawler() {
   ): Promise<void> => {
     const { limit = 5, analyze = true } = options;
 
-    console.log('[useCrawler] executeCrawl called: crawlId=%d, runningRef=%s', crawlId, runningRef.current);
-    if (runningRef.current) {
-      console.log('[useCrawler] SKIPPED — already running');
-      return;
-    }
+    if (runningRef.current) return;
     runningRef.current = true;
 
     safeSetState(() => ({
