@@ -216,35 +216,93 @@ export function getCurrentModelId(): string | null {
  */
 const INFERENCE_TIMEOUT_MS = 30_000;
 
+export interface InferenceStats {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  tokensPerSec: number;
+  elapsedMs: number;
+}
+
+export interface InferenceCallbacks {
+  /** Called with each new token as it's generated */
+  onToken?: (token: string, partialText: string) => void;
+  /** Called when inference completes with stats */
+  onStats?: (stats: InferenceStats) => void;
+}
+
 /**
- * Run chat completion with the loaded model.
+ * Run streaming chat completion with the loaded model.
+ * Streams tokens to onToken callback for live UI updates.
  * Includes a timeout to prevent indefinite hangs on GPU errors.
- * Resets the chat session before each call to avoid context buildup.
  */
 export async function chatCompletion(
   systemPrompt: string,
   userPrompt: string,
+  callbacks?: InferenceCallbacks,
 ): Promise<string> {
   if (!engine) throw new Error('No model loaded');
 
-  // Reset chat state between calls — prevents context window overflow
-  // and clears any corrupted state from prior WebGPU errors
   await engine.resetChat();
 
-  // Race the inference against a timeout
-  const result = await Promise.race([
-    engine.chat.completions.create({
+  const startTime = performance.now();
+  let fullText = '';
+  let timedOut = false;
+
+  const timer = setTimeout(() => { timedOut = true; }, INFERENCE_TIMEOUT_MS);
+
+  try {
+    const stream = await engine.chat.completions.create({
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.3,
       max_tokens: 400,
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Inference timeout (30s) — GPU may be overloaded')), INFERENCE_TIMEOUT_MS),
-    ),
-  ]);
+      stream: true,
+      stream_options: { include_usage: true },
+    });
 
-  return result.choices[0]?.message?.content ?? '';
+    for await (const chunk of stream) {
+      if (timedOut) {
+        throw new Error('Inference timeout (30s) — GPU may be overloaded');
+      }
+
+      const delta = chunk.choices[0]?.delta?.content ?? '';
+      if (delta) {
+        fullText += delta;
+        callbacks?.onToken?.(delta, fullText);
+      }
+
+      // Last chunk includes usage stats
+      if (chunk.usage) {
+        const elapsedMs = performance.now() - startTime;
+        const stats: InferenceStats = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+          tokensPerSec: chunk.usage.completion_tokens / (elapsedMs / 1000),
+          elapsedMs,
+        };
+        callbacks?.onStats?.(stats);
+      }
+    }
+
+    // If no usage came from stream, compute basic stats
+    if (callbacks?.onStats && fullText) {
+      const elapsedMs = performance.now() - startTime;
+      const approxTokens = Math.ceil(fullText.length / 4);
+      callbacks.onStats({
+        promptTokens: 0,
+        completionTokens: approxTokens,
+        totalTokens: approxTokens,
+        tokensPerSec: approxTokens / (elapsedMs / 1000),
+        elapsedMs,
+      });
+    }
+
+    return fullText;
+  } finally {
+    clearTimeout(timer);
+  }
 }

@@ -12,10 +12,17 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { db } from '@/lib/db/dexie-client';
 import { crawlFromBrowser, type WebCrawlPage } from '@/lib/crawler/web-client';
-import { analyzePageForGeo } from '@/lib/webllm/analyzer';
+import { analyzePageForGeo, type InferenceStats } from '@/lib/webllm/analyzer';
 import { isModelLoaded } from '@/lib/webllm/engine';
 import { aggregateResults } from '@/lib/analysis/engine';
 import type { GeoPageAnalysis } from '@/types/analysis';
+
+export interface InferenceLogEntry {
+  url: string;
+  output: string;
+  stats: InferenceStats | null;
+  status: 'streaming' | 'done' | 'failed' | 'skipped';
+}
 
 export interface CrawlerState {
   status: 'idle' | 'crawling' | 'analyzing' | 'completed' | 'failed';
@@ -24,6 +31,8 @@ export interface CrawlerState {
   crawlId: number | null;
   pageCount: number;
   analyzedCount: number;
+  /** Live inference log — latest entry is the current/most recent page */
+  inferenceLog: InferenceLogEntry[];
 }
 
 /** Yield main thread so React can process pending renders and user input */
@@ -85,6 +94,7 @@ export function useCrawler() {
     crawlId: null,
     pageCount: 0,
     analyzedCount: 0,
+    inferenceLog: [],
   });
 
   const abortRef = useRef<AbortController | null>(null);
@@ -117,6 +127,7 @@ export function useCrawler() {
       crawlId,
       pageCount: 0,
       analyzedCount: 0,
+      inferenceLog: [],
     }));
 
     abortRef.current = new AbortController();
@@ -197,9 +208,19 @@ export function useCrawler() {
           let result: GeoPageAnalysis;
 
           if (useDefaults) {
-            safeSetState((s) => ({ ...s, message: `Using defaults (GPU unavailable): ${page.url}` }));
+            safeSetState((s) => ({
+              ...s,
+              message: `Using defaults (GPU unavailable): ${page.url}`,
+              inferenceLog: [...s.inferenceLog, { url: page.url, output: '', stats: null, status: 'skipped' as const }],
+            }));
             result = buildDefaultAnalysis(page.url, page.markdown);
           } else {
+            // Add streaming log entry
+            safeSetState((s) => ({
+              ...s,
+              inferenceLog: [...s.inferenceLog, { url: page.url, output: '', stats: null, status: 'streaming' as const }],
+            }));
+
             try {
               result = await analyzePageForGeo({
                 url: page.url,
@@ -208,11 +229,39 @@ export function useCrawler() {
                 onProgress: (msg) => {
                   safeSetState((s) => ({ ...s, message: msg }));
                 },
+                onToken: (_token, partialText) => {
+                  safeSetState((s) => {
+                    const log = [...s.inferenceLog];
+                    if (log.length > 0) {
+                      log[log.length - 1] = { ...log[log.length - 1], output: partialText };
+                    }
+                    return { ...s, inferenceLog: log };
+                  });
+                },
+                onStats: (stats) => {
+                  safeSetState((s) => {
+                    const log = [...s.inferenceLog];
+                    if (log.length > 0) {
+                      log[log.length - 1] = { ...log[log.length - 1], stats, status: 'done' };
+                    }
+                    return { ...s, inferenceLog: log };
+                  });
+                },
               });
-              consecutiveFailures = 0; // Reset on success
+              consecutiveFailures = 0;
             } catch {
               consecutiveFailures++;
-              safeSetState((s) => ({ ...s, message: `Inference failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${page.url}` }));
+              safeSetState((s) => {
+                const log = [...s.inferenceLog];
+                if (log.length > 0) {
+                  log[log.length - 1] = { ...log[log.length - 1], status: 'failed' };
+                }
+                return {
+                  ...s,
+                  message: `Inference failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${page.url}`,
+                  inferenceLog: log,
+                };
+              });
               result = buildDefaultAnalysis(page.url, page.markdown);
             }
           }
@@ -291,6 +340,7 @@ export function useCrawler() {
       crawlId,
       pageCount: 0,
       analyzedCount: 0,
+      inferenceLog: [],
     }));
     abortRef.current = new AbortController();
 

@@ -5,18 +5,24 @@
  * but runs inference through WebLLM instead of llama-server.
  */
 
-import { chatCompletion } from './engine.js';
+import { chatCompletion, type InferenceCallbacks, type InferenceStats } from './engine.js';
 import { SYSTEM_PROMPT, buildGeoAnalysisPrompt, parseScoreResponse } from '../ai/prompts.js';
 import { smartTruncate } from '../ai/truncate.js';
 import { safeJsonParse } from '../ai/json-repair.js';
 import type { GeoPageAnalysis } from '../../types/analysis.js';
 import { GeoPageAnalysisSchema } from '../../types/analysis.js';
 
+export type { InferenceStats };
+
 interface AnalyzePageInput {
   url: string;
   markdown: string;
   baseUrl: string;
   onProgress?: (message: string) => void;
+  /** Called with each token as the model generates */
+  onToken?: (token: string, partialText: string) => void;
+  /** Called when inference completes with stats */
+  onStats?: (stats: InferenceStats) => void;
 }
 
 /**
@@ -28,21 +34,17 @@ interface AnalyzePageInput {
  * 3. Number extraction fallback
  */
 export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPageAnalysis> {
-  const { url, markdown, baseUrl, onProgress } = input;
+  const { url, markdown, baseUrl, onProgress, onToken, onStats } = input;
 
-  // Truncate markdown aggressively to fit small model context windows
-  // 1200 chars ≈ 300-400 tokens, leaving room for prompt template + output
   const truncated = smartTruncate(markdown, 1200);
-
   const prompt = buildGeoAnalysisPrompt({ url, markdown: truncated, baseUrl });
 
   onProgress?.(`Analyzing: ${url}`);
 
   let raw: string;
   try {
-    raw = await chatCompletion(SYSTEM_PROMPT, prompt);
+    raw = await chatCompletion(SYSTEM_PROMPT, prompt, { onToken, onStats });
   } catch (err) {
-    // Re-throw so caller can track consecutive failures for circuit breaker
     onProgress?.(`Inference failed for ${url}: ${err instanceof Error ? err.message : 'unknown'}`);
     throw err;
   }

@@ -245,6 +245,45 @@ function CrawlDetailContent() {
             />
           )}
 
+          {/* Inference log — live streaming output from WebLLM */}
+          {crawler.inferenceLog.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>AI Inference Log</CardTitle>
+              </CardHeader>
+              <div className="max-h-80 overflow-y-auto space-y-3">
+                {crawler.inferenceLog.map((entry, idx) => (
+                  <div key={idx} className="border-b border-border/30 pb-2 last:border-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-accent truncate max-w-[60%]">{entry.url}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        entry.status === 'streaming' ? 'text-yellow-400 bg-yellow-400/10' :
+                        entry.status === 'done' ? 'text-green-400 bg-green-400/10' :
+                        entry.status === 'failed' ? 'text-red-400 bg-red-400/10' :
+                        'text-muted bg-surface2'
+                      }`}>
+                        {entry.status === 'streaming' ? 'generating...' : entry.status}
+                      </span>
+                    </div>
+                    {entry.output && (
+                      <pre className="text-[11px] text-muted bg-[#0a0e17] rounded p-2 overflow-x-auto max-h-32 whitespace-pre-wrap font-mono leading-relaxed">
+                        {entry.output}
+                        {entry.status === 'streaming' && <span className="animate-pulse">|</span>}
+                      </pre>
+                    )}
+                    {entry.stats && (
+                      <div className="flex gap-4 mt-1 text-[10px] text-muted">
+                        <span>{entry.stats.tokensPerSec.toFixed(1)} tok/s</span>
+                        <span>{entry.stats.completionTokens} tokens</span>
+                        <span>{(entry.stats.elapsedMs / 1000).toFixed(1)}s</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {isComplete && sm && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
