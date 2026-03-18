@@ -42,9 +42,9 @@ export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPag
   try {
     raw = await chatCompletion(SYSTEM_PROMPT, prompt);
   } catch (err) {
-    // Inference failed (timeout, GPU error, etc.) — use defaults
+    // Re-throw so caller can track consecutive failures for circuit breaker
     onProgress?.(`Inference failed for ${url}: ${err instanceof Error ? err.message : 'unknown'}`);
-    return buildDefaultResult({}, url, markdown);
+    throw err;
   }
 
   if (!raw || raw.trim().length < 10) {

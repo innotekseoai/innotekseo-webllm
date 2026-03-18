@@ -210,18 +210,26 @@ export function getCurrentModelId(): string | null {
   return currentModelId;
 }
 
-/** Inference timeout — abort if a single completion takes longer than this */
-const INFERENCE_TIMEOUT_MS = 90_000;
+/**
+ * Inference timeout — WebGPU errors can cause promises to hang
+ * indefinitely. 30s is enough for ~400 tokens on mobile GPUs.
+ */
+const INFERENCE_TIMEOUT_MS = 30_000;
 
 /**
  * Run chat completion with the loaded model.
- * Includes a timeout to prevent indefinite hangs on slow GPUs.
+ * Includes a timeout to prevent indefinite hangs on GPU errors.
+ * Resets the chat session before each call to avoid context buildup.
  */
 export async function chatCompletion(
   systemPrompt: string,
   userPrompt: string,
 ): Promise<string> {
   if (!engine) throw new Error('No model loaded');
+
+  // Reset chat state between calls — prevents context window overflow
+  // and clears any corrupted state from prior WebGPU errors
+  await engine.resetChat();
 
   // Race the inference against a timeout
   const result = await Promise.race([
@@ -231,11 +239,10 @@ export async function chatCompletion(
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.3,
-      // ~20 lines of scores + 3 recommendations = ~300 tokens max
       max_tokens: 400,
     }),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Inference timeout — model too slow or prompt too large')), INFERENCE_TIMEOUT_MS),
+      setTimeout(() => reject(new Error('Inference timeout (30s) — GPU may be overloaded')), INFERENCE_TIMEOUT_MS),
     ),
   ]);
 

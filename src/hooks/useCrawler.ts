@@ -29,6 +29,27 @@ export interface CrawlerState {
 /** Yield main thread so React can process pending renders and user input */
 const yieldThread = () => new Promise<void>((r) => setTimeout(r, 0));
 
+/** Build default scores when AI inference fails or is skipped */
+function buildDefaultAnalysis(url: string, markdown: string): GeoPageAnalysis {
+  const path = (() => { try { return new URL(url).pathname; } catch { return url; } })();
+  return {
+    json_ld: JSON.stringify({ '@context': 'https://schema.org', '@type': 'WebPage', url }),
+    llms_txt_entry: `- [Page](${path}): Content page`,
+    entity_clarity_score: 5,
+    fact_density_count: 0,
+    word_count: markdown.split(/\s+/).length,
+    content_quality_score: 5,
+    semantic_structure_score: 5,
+    entity_richness_score: 5,
+    citation_readiness_score: 5,
+    technical_seo_score: 5,
+    user_intent_alignment_score: 5,
+    trust_signals_score: 5,
+    authority_score: 5,
+    geo_recommendations: [],
+  };
+}
+
 /**
  * Create a crawl record in Dexie. Returns the crawlId instantly.
  * Does NOT start the crawl — call executeCrawl() for that.
@@ -157,6 +178,8 @@ export function useCrawler() {
 
         const crawlPages = await db.crawlPages.where('crawlId').equals(crawlId).toArray();
         const pageResults: Array<{ page_url: string; result: GeoPageAnalysis }> = [];
+        let consecutiveFailures = 0;
+        const MAX_CONSECUTIVE_FAILURES = 2;
 
         for (let i = 0; i < crawlPages.length; i++) {
           if (abortRef.current.signal.aborted) break;
@@ -164,22 +187,38 @@ export function useCrawler() {
           const page = crawlPages[i];
           if (page.status === 'analyzed') continue;
 
-          // Yield main thread before each inference so UI stays responsive
+          // Circuit breaker: if GPU keeps failing, skip AI and use defaults
+          const useDefaults = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+
           await yieldThread();
 
           await db.crawlPages.update(page.id!, { status: 'analyzing' });
 
-          try {
-            const result = await analyzePageForGeo({
-              url: page.url,
-              markdown: page.markdown,
-              baseUrl,
-              onProgress: (msg) => {
-                safeSetState((s) => ({ ...s, message: msg }));
-              },
-            });
+          let result: GeoPageAnalysis;
 
-            // Batch the analysis insert + page status update in one transaction
+          if (useDefaults) {
+            safeSetState((s) => ({ ...s, message: `Using defaults (GPU unavailable): ${page.url}` }));
+            result = buildDefaultAnalysis(page.url, page.markdown);
+          } else {
+            try {
+              result = await analyzePageForGeo({
+                url: page.url,
+                markdown: page.markdown,
+                baseUrl,
+                onProgress: (msg) => {
+                  safeSetState((s) => ({ ...s, message: msg }));
+                },
+              });
+              consecutiveFailures = 0; // Reset on success
+            } catch {
+              consecutiveFailures++;
+              safeSetState((s) => ({ ...s, message: `Inference failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${page.url}` }));
+              result = buildDefaultAnalysis(page.url, page.markdown);
+            }
+          }
+
+          // Store result (AI or defaults)
+          try {
             await db.transaction('rw', [db.pageAnalyses, db.crawlPages], async () => {
               await db.pageAnalyses.add({
                 crawlId,
@@ -203,18 +242,17 @@ export function useCrawler() {
               });
               await db.crawlPages.update(page.id!, { status: 'analyzed' });
             });
-
-            pageResults.push({ page_url: page.url, result });
-            safeSetState((s) => ({
-              ...s,
-              analyzedCount: i + 1,
-              progress: 50 + Math.round(((i + 1) / crawlPages.length) * 50),
-            }));
           } catch {
             await db.crawlPages.update(page.id!, { status: 'failed' });
           }
 
-          // Yield again after DB writes so useLiveQuery renders can flush
+          pageResults.push({ page_url: page.url, result });
+          safeSetState((s) => ({
+            ...s,
+            analyzedCount: i + 1,
+            progress: 50 + Math.round(((i + 1) / crawlPages.length) * 50),
+          }));
+
           await yieldThread();
         }
 
