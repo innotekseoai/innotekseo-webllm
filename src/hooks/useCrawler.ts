@@ -68,6 +68,7 @@ export function useCrawler() {
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const runningRef = useRef(false);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const safeSetState = useCallback((updater: (s: CrawlerState) => CrawlerState) => {
@@ -84,7 +85,9 @@ export function useCrawler() {
   ): Promise<void> => {
     const { limit = 50, analyze = true } = options;
 
-    if (state.status === 'crawling' || state.status === 'analyzing') return;
+    // Use ref for guard — avoids stale closure from useCallback dependency on state.status
+    if (runningRef.current) return;
+    runningRef.current = true;
 
     safeSetState(() => ({
       status: 'crawling',
@@ -138,6 +141,7 @@ export function useCrawler() {
       if (abortRef.current.signal.aborted) {
         await db.crawls.update(crawlId, { status: 'failed', errorMessage: 'Cancelled by user' });
         safeSetState((s) => ({ ...s, status: 'failed', message: 'Cancelled' }));
+        runningRef.current = false;
         return;
       }
 
@@ -234,8 +238,10 @@ export function useCrawler() {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       await db.crawls.update(crawlId, { status: 'failed', errorMessage });
       safeSetState((s) => ({ ...s, status: 'failed', message: errorMessage }));
+    } finally {
+      runningRef.current = false;
     }
-  }, [state.status, safeSetState]);
+  }, [safeSetState]);
 
   const resumeAnalysis = useCallback(async (crawlId: number, baseUrl: string) => {
     if (!isModelLoaded()) return;

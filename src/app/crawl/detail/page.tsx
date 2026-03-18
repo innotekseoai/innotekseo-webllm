@@ -44,16 +44,18 @@ function CrawlDetailContent() {
   const startedRef = useRef(false);
 
   // Auto-start crawl when we land on a pending crawl (navigated from form)
+  // Uses startedRef to guarantee single execution regardless of effect re-runs
   useEffect(() => {
     if (!data?.crawl || startedRef.current) return;
-    if (data.crawl.status === 'pending' && crawler.status === 'idle') {
+    if (data.crawl.status === 'pending') {
       startedRef.current = true;
       crawler.executeCrawl(data.crawl.id!, data.crawl.baseUrl, {
         limit: limitParam,
         analyze: analyzeParam,
       });
     }
-  }, [data?.crawl, crawler.status, crawler.executeCrawl, analyzeParam, limitParam]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.crawl?.status]);
 
   const handleResumeAnalysis = useCallback(async () => {
     if (!data?.crawl || !webllm.isReady) return;
