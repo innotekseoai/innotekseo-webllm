@@ -60,6 +60,18 @@ function CrawlDetailContent() {
     await crawler.resumeAnalysis(data.crawl.id!, data.crawl.baseUrl);
   }, [data?.crawl, webllm.isReady, crawler]);
 
+  // Memoize terminal lines — must be above early returns (Rules of Hooks)
+  const pages = data?.pages ?? [];
+  const analyses = data?.analyses ?? [];
+  const lines: ConsoleLine[] = useMemo(
+    () => pages.map((p, i) => ({
+      type: 'page' as const,
+      data: { url: p.url, title: p.title ?? '', charCount: p.charCount, index: i },
+    })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pages.length],
+  );
+
   if (!id) {
     return <div className="text-center py-8 text-muted">No crawl ID specified</div>;
   }
@@ -72,7 +84,7 @@ function CrawlDetailContent() {
     );
   }
 
-  const { crawl, pages, analyses } = data;
+  const { crawl } = data;
   const sm = crawl.siteMetrics ? JSON.parse(crawl.siteMetrics) : null;
 
   // Use crawler hook status if it's tracking this crawl, otherwise use DB status
@@ -82,16 +94,6 @@ function CrawlDetailContent() {
   const isLive = ['crawling', 'analyzing', 'pending'].includes(effectiveStatus);
   const isComplete = effectiveStatus === 'completed';
   const progress = crawler.crawlId === crawl.id ? crawler.progress : (isComplete ? 100 : 0);
-
-  // Memoize terminal lines — only rebuild when page count changes, not on every Dexie write
-  const lines: ConsoleLine[] = useMemo(
-    () => pages.map((p, i) => ({
-      type: 'page' as const,
-      data: { url: p.url, title: p.title ?? '', charCount: p.charCount, index: i },
-    })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pages.length],
-  );
 
   const steps: Array<{ label: string; status: 'pending' | 'active' | 'completed' | 'error'; detail?: string }> = [
     {
