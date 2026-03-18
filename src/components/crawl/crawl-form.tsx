@@ -1,48 +1,25 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Globe, Loader2, Cpu } from 'lucide-react';
-
-interface Model {
-  filename: string;
-  path: string;
-  sizeHuman: string;
-  isOptimized?: boolean;
-  isDefault?: boolean;
-}
+import { useWebLLM } from '@/hooks/useWebLLM';
+import { useCrawler } from '@/hooks/useCrawler';
 
 export function CrawlForm() {
   const router = useRouter();
+  const webllm = useWebLLM();
+  const crawler = useCrawler();
   const [url, setUrl] = useState('');
   const [limit, setLimit] = useState(50);
-  const [maxDepth, setMaxDepth] = useState<number | undefined>(undefined);
-  const [crawlerType, setCrawlerType] = useState<'native' | 'browser'>('native');
   const [analyze, setAnalyze] = useState(true);
-  const [models, setModels] = useState<Model[]>([]);
-  const [selectedModel, setSelectedModel] = useState('');
-  const [serverModel, setServerModel] = useState<string | null>(null);
-  const [repeat, setRepeat] = useState(false);
-  const [frequency, setFrequency] = useState('weekly');
+  const [selectedModel, setSelectedModel] = useState(
+    webllm.currentModel ?? webllm.availableModels[1]?.id ?? webllm.availableModels[0]?.id ?? '',
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    fetch('/api/ai/models')
-      .then((r) => r.json())
-      .then((data) => {
-        const list: Model[] = data.models ?? [];
-        setModels(list);
-        setServerModel(data.serverModel ?? null);
-        // Use API-provided default, or first model
-        const defaultPath = data.defaultModel ?? list[0]?.path;
-        if (defaultPath) setSelectedModel(defaultPath);
-        if (list.length === 0) setAnalyze(false);
-      })
-      .catch(() => {});
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -67,48 +44,27 @@ export function CrawlForm() {
 
     setSubmitting(true);
     try {
-      const payload: Record<string, unknown> = { url: finalUrl, limit, crawlerType };
-      if (maxDepth !== undefined) payload.maxDepth = maxDepth;
-      if (analyze && selectedModel) {
-        payload.analyze = true;
-        payload.modelPath = selectedModel;
+      // Load model if needed
+      if (analyze && !webllm.isReady) {
+        if (!webllm.hasWebGPU) {
+          setError('WebGPU not supported in this browser. Disable analysis or use Chrome/Edge.');
+          setSubmitting(false);
+          return;
+        }
+        await webllm.load(selectedModel);
       }
 
-      const res = await fetch('/api/crawl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const crawlId = await crawler.startCrawl(finalUrl, {
+        limit,
+        analyze,
+        modelId: selectedModel,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Failed to start crawl');
-        return;
+      if (crawlId) {
+        router.push(`/crawl/detail?id=${crawlId}`);
       }
-
-      // Create schedule if repeat is enabled
-      if (repeat) {
-        const schedConfig: Record<string, unknown> = {};
-        if (analyze && selectedModel) {
-          schedConfig.analyze = true;
-          schedConfig.modelPath = selectedModel;
-        }
-        if (maxDepth !== undefined) schedConfig.maxDepth = maxDepth;
-
-        await fetch('/api/schedules', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            baseUrl: finalUrl,
-            frequency,
-            config: Object.keys(schedConfig).length > 0 ? schedConfig : undefined,
-          }),
-        });
-      }
-
-      router.push(`/crawl/${data.id}?autostart=1`);
     } catch {
-      setError('Network error');
+      setError('Failed to start crawl');
     } finally {
       setSubmitting(false);
     }
@@ -157,56 +113,15 @@ export function CrawlForm() {
           </div>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="block text-sm font-medium text-muted">
-            Max Depth: {maxDepth === undefined ? 'Unlimited' : maxDepth}
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={10}
-            value={maxDepth ?? 10}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setMaxDepth(v >= 10 ? undefined : v);
-            }}
-            className="w-full accent-accent"
-          />
-          <div className="flex justify-between text-xs text-muted">
-            <span>0 (seed only)</span>
-            <span>Unlimited</span>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm font-medium text-muted">Crawler Type</label>
-          <div className="flex gap-2">
-            {(['native', 'browser'] as const).map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setCrawlerType(type)}
-                className={`px-4 py-2 rounded-lg text-sm border transition-colors ${
-                  crawlerType === type
-                    ? 'border-accent bg-accent/10 text-accent'
-                    : 'border-border bg-surface2 text-muted hover:text-text'
-                }`}
-              >
-                {type === 'native' ? 'Native (HTTP)' : 'Browser (Playwright)'}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* AI Analysis toggle */}
         <div className="space-y-2">
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => models.length > 0 && setAnalyze(!analyze)}
+              onClick={() => setAnalyze(!analyze)}
               className={`relative w-9 h-5 rounded-full transition-colors ${
                 analyze ? 'bg-accent' : 'bg-border'
-              } ${models.length === 0 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+              } cursor-pointer`}
             >
               <span
                 className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -216,11 +131,11 @@ export function CrawlForm() {
             </button>
             <label className="text-sm font-medium text-muted flex items-center gap-1.5">
               <Cpu className="w-3.5 h-3.5" />
-              Run GEO Analysis
+              Run GEO Analysis (WebLLM)
             </label>
           </div>
 
-          {analyze && models.length > 0 && (
+          {analyze && (
             <div className="space-y-1.5">
               <select
                 value={selectedModel}
@@ -228,70 +143,31 @@ export function CrawlForm() {
                 className="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
                   focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30 transition-colors"
               >
-                {models.map((m) => (
-                  <option key={m.path} value={m.path}>
-                    {m.filename} ({m.sizeHuman}){m.isOptimized ? ' ⚡ GPU' : ''}{m.isDefault ? ' ★' : ''}
+                {webllm.availableModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label} ({m.sizeHint})
                   </option>
                 ))}
               </select>
-              {serverModel && (
+              {!webllm.hasWebGPU && (
+                <p className="text-xs text-yellow-400/70">
+                  WebGPU not detected. Use Chrome or Edge for GPU acceleration.
+                </p>
+              )}
+              {webllm.isReady && (
                 <p className="text-xs text-accent/70">
-                  GPU server active: {serverModel}
-                  {selectedModel && !selectedModel.includes(serverModel) && (
-                    <span className="text-yellow-400/70"> — will switch model on start</span>
-                  )}
+                  Model loaded: {webllm.currentModel}
                 </p>
               )}
             </div>
           )}
-
-          {models.length === 0 && (
-            <p className="text-xs text-muted/60">
-              No models found. Place .gguf files in data/models/ to enable analysis.
-            </p>
-          )}
         </div>
 
-        {/* Repeat / Schedule */}
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setRepeat(!repeat)}
-              className={`relative w-9 h-5 rounded-full transition-colors ${
-                repeat ? 'bg-accent' : 'bg-border'
-              } cursor-pointer`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                  repeat ? 'translate-x-4' : ''
-                }`}
-              />
-            </button>
-            <label className="text-sm font-medium text-muted">
-              Repeat crawl on schedule
-            </label>
-          </div>
-
-          {repeat && (
-            <select
-              value={frequency}
-              onChange={(e) => setFrequency(e.target.value)}
-              className="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
-                focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30 transition-colors"
-            >
-              <option value="daily">Daily (3:00 AM)</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
-            </select>
-          )}
-        </div>
-
-        <Button type="submit" disabled={submitting} className="w-full">
-          {submitting ? (
+        <Button type="submit" disabled={submitting || webllm.isLoading} className="w-full">
+          {submitting || webllm.isLoading ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              Starting...
+              {webllm.isLoading ? `Loading model... ${Math.round(webllm.loadProgress.progress * 100)}%` : 'Starting...'}
             </>
           ) : (
             <>

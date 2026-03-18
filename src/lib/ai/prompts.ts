@@ -1,10 +1,12 @@
 /**
  * Prompt templates for local AI GEO analysis
  *
- * Designed for tiny models (135M-500M params).
+ * Designed for small models (0.5B-1.5B params via WebLLM).
  * Asks for simple CSV-style scores, not full JSON — we parse into structure.
  * For scores ≤ 4, requests a pipe-separated explanation.
  */
+
+import { generateRichJsonLd } from './schema-generator.js';
 
 export const SYSTEM_PROMPT =
   'You are a GEO scoring assistant. Reply with scores only. For scores 4 or below, add a brief reason after a pipe character.';
@@ -130,19 +132,7 @@ export function parseScoreResponse(raw: string, url: string, markdown: string, s
   })();
 
   // Generate rich type-specific JSON-LD
-  let jsonLd: string;
-  try {
-    const { generateRichJsonLd } = require('./schema-generator');
-    jsonLd = generateRichJsonLd({ url, markdown });
-  } catch {
-    // Fallback to simple schema
-    jsonLd = JSON.stringify({
-      '@context': 'https://schema.org',
-      '@type': schemaType,
-      name: markdown.split('\n')[0]?.replace(/^#\s*/, '').slice(0, 100) || 'Page',
-      url,
-    });
-  }
+  const jsonLd = generateRichJsonLd({ url, markdown });
 
   return {
     _parsedScoreCount: validScores.length,

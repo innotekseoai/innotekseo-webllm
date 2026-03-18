@@ -85,7 +85,7 @@ export function CrawlList({ crawls, selectedIds, onSelectionChange }: CrawlListP
                 </td>
               )}
               <td className="py-3 pr-4">
-                <Link href={`/crawl/${crawl.id}`} className="text-accent hover:underline truncate block max-w-xs">
+                <Link href={`/crawl/detail?id=${crawl.id}`} className="text-accent hover:underline truncate block max-w-xs">
                   {crawl.baseUrl}
                 </Link>
               </td>

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState, useCallback } from 'react';
+import { Suspense, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/layout/header';
@@ -8,17 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { CrawlList } from '@/components/crawl/crawl-list';
 import { BulkActions } from '@/components/crawl/bulk-actions';
+import { useCrawls, deleteCrawls } from '@/hooks/useDb';
 import { Plus, Globe, BarChart3, FileText, Search, ChevronLeft, ChevronRight } from 'lucide-react';
-
-interface CrawlRow {
-  id: string;
-  baseUrl: string;
-  status: string;
-  pagesCrawled: number;
-  overallGrade: string | null;
-  premiumScore: number | null;
-  createdAt: string;
-}
 
 export default function DashboardPage() {
   return (
@@ -31,9 +22,6 @@ export default function DashboardPage() {
 function DashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [crawls, setCrawls] = useState<CrawlRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const page = parseInt(searchParams.get('page') ?? '1', 10);
@@ -42,27 +30,19 @@ function DashboardContent() {
   const gradeFilter = searchParams.get('grade') ?? '';
   const statusFilter = searchParams.get('status') ?? '';
 
-  const fetchCrawls = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set('page', String(page));
-      params.set('limit', String(limit));
-      if (q) params.set('q', q);
-      if (gradeFilter) params.set('grade', gradeFilter);
-      if (statusFilter) params.set('status', statusFilter);
+  // Reactive Dexie query — auto-updates when IndexedDB changes
+  const { crawls: rawCrawls, total } = useCrawls({ q, grade: gradeFilter, status: statusFilter, page, limit });
 
-      const res = await fetch(`/api/crawl?${params}`);
-      const data = await res.json();
-      setCrawls(data.crawls ?? []);
-      setTotal(data.total ?? 0);
-    } catch {}
-    setLoading(false);
-  }, [page, q, gradeFilter, statusFilter]);
-
-  useEffect(() => {
-    fetchCrawls();
-  }, [fetchCrawls]);
+  // Map to CrawlList-compatible format (id as string for component compat)
+  const crawls = rawCrawls.map((c) => ({
+    id: String(c.id),
+    baseUrl: c.baseUrl,
+    status: c.status,
+    pagesCrawled: c.pagesCrawled,
+    overallGrade: c.overallGrade,
+    premiumScore: c.premiumScore,
+    createdAt: c.createdAt,
+  }));
 
   function updateParams(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -70,7 +50,6 @@ function DashboardContent() {
       if (value) params.set(key, value);
       else params.delete(key);
     }
-    // Reset page when filters change
     if (!('page' in updates)) params.set('page', '1');
     router.push(`?${params.toString()}`);
   }
@@ -84,30 +63,8 @@ function DashboardContent() {
     : 0;
 
   async function handleBulkDelete(ids: string[]) {
-    await fetch('/api/crawl', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
+    await deleteCrawls(ids.map(Number));
     setSelectedIds(new Set());
-    fetchCrawls();
-  }
-
-  async function handleBulkRecrawl(ids: string[]) {
-    const selected = crawls.filter((c) => ids.includes(c.id));
-    for (const crawl of selected) {
-      const res = await fetch('/api/crawl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: crawl.baseUrl, limit: 50 }),
-      });
-      const data = await res.json();
-      if (data.id) {
-        await fetch(`/api/crawl/${data.id}/start`, { method: 'POST' });
-      }
-    }
-    setSelectedIds(new Set());
-    fetchCrawls();
   }
 
   return (
@@ -201,7 +158,6 @@ function DashboardContent() {
         <BulkActions
           count={selectedIds.size}
           onDelete={() => handleBulkDelete(Array.from(selectedIds))}
-          onRecrawl={() => handleBulkRecrawl(Array.from(selectedIds))}
           onClear={() => setSelectedIds(new Set())}
         />
       )}
@@ -212,15 +168,11 @@ function DashboardContent() {
             {q || gradeFilter || statusFilter ? `Filtered Crawls (${total})` : 'Recent Crawls'}
           </CardTitle>
         </CardHeader>
-        {loading ? (
-          <div className="text-center py-8 text-muted">Loading...</div>
-        ) : (
-          <CrawlList
-            crawls={crawls}
-            selectedIds={selectedIds}
-            onSelectionChange={setSelectedIds}
-          />
-        )}
+        <CrawlList
+          crawls={crawls}
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+        />
 
         {/* Pagination */}
         {totalPages > 1 && (

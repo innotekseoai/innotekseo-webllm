@@ -49,7 +49,7 @@ export function Sidebar() {
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="px-5 pt-2 text-muted text-xs">GEO Crawler & Analyzer</p>
+        <p className="px-5 pt-2 text-muted text-xs">Browser AI &middot; WebLLM</p>
 
         <nav className="flex-1 p-3 space-y-1 mt-1">
           {nav.map(({ href, label, icon: Icon }) => {
@@ -73,7 +73,7 @@ export function Sidebar() {
         </nav>
 
         <div className="p-4 border-t border-border">
-          <p className="text-muted text-xs">v0.1.0 &middot; Local AI</p>
+          <p className="text-muted text-xs">v4.0 &middot; WebLLM</p>
         </div>
       </aside>
     </>
