@@ -115,6 +115,126 @@ export function supportsWebGPU(): boolean {
   return 'gpu' in navigator;
 }
 
+export type GpuTier = 'none' | 'software' | 'integrated' | 'dedicated';
+
+export interface GpuInfo {
+  supported: boolean;
+  tier: GpuTier;
+  vendor: string;
+  device: string;
+  architecture: string;
+  /** True when running on integrated or software GPU — WebLLM may OOM or be very slow */
+  degraded: boolean;
+  warning: string | null;
+}
+
+/**
+ * Probe the active WebGPU adapter and classify the GPU tier.
+ * Returns info about vendor, device type, and whether the GPU is likely
+ * too weak for LLM inference (integrated / software fallback).
+ */
+export async function getGpuInfo(): Promise<GpuInfo> {
+  const unsupported: GpuInfo = {
+    supported: false,
+    tier: 'none',
+    vendor: '',
+    device: '',
+    architecture: '',
+    degraded: true,
+    warning: 'WebGPU is not supported in this browser. Use Chrome or Edge.',
+  };
+
+  if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
+    return unsupported;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const gpu = (navigator as any).gpu;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let adapter: any = null;
+  try {
+    // Prefer high-performance (discrete) GPU
+    adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
+  } catch {
+    return unsupported;
+  }
+
+  if (!adapter) {
+    return { ...unsupported, supported: true, warning: 'No WebGPU adapter found. GPU may be disabled or unavailable.' };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let info: any;
+  try {
+    info = await adapter.requestAdapterInfo();
+  } catch {
+    // requestAdapterInfo may be blocked in some contexts
+    return {
+      supported: true,
+      tier: 'dedicated',
+      vendor: 'unknown',
+      device: 'unknown',
+      architecture: 'unknown',
+      degraded: false,
+      warning: null,
+    };
+  }
+
+  const vendor = (info.vendor ?? '').toLowerCase();
+  const device = (info.device ?? '').toLowerCase();
+  const architecture = (info.architecture ?? '').toLowerCase();
+  const description = (info.description ?? '').toLowerCase();
+  const combined = `${vendor} ${device} ${architecture} ${description}`;
+
+  // Software / CPU renderers
+  const isSoftware =
+    combined.includes('swiftshader') ||
+    combined.includes('llvmpipe') ||
+    combined.includes('software') ||
+    combined.includes('microsoft basic render') ||
+    combined.includes('warp');
+
+  // Integrated GPU vendors/names
+  const isIntegrated =
+    vendor.includes('intel') ||
+    combined.includes('uhd graphics') ||
+    combined.includes('iris') ||
+    combined.includes('adreno') ||         // Qualcomm integrated (mobile)
+    combined.includes('apple m') ||         // Apple Silicon (unified, but capable)
+    (vendor.includes('amd') && combined.includes('vega'));
+
+  // Dedicated GPU check
+  const isDedicated =
+    vendor.includes('nvidia') ||
+    (vendor.includes('amd') && !isIntegrated) ||
+    vendor.includes('qualcomm') && combined.includes('adreno') && !isIntegrated;
+
+  let tier: GpuTier;
+  let warning: string | null = null;
+
+  if (isSoftware) {
+    tier = 'software';
+    warning = 'WebGPU is running on a software renderer. LLM inference will be extremely slow or fail. Enable GPU acceleration in your browser settings.';
+  } else if (isDedicated) {
+    tier = 'dedicated';
+  } else if (isIntegrated) {
+    tier = 'integrated';
+    warning = 'WebGPU is using an integrated GPU. LLM inference may be slow or run out of memory. Consider switching to a dedicated GPU in your OS graphics settings.';
+  } else {
+    tier = 'dedicated'; // Unknown but hardware — optimistic
+  }
+
+  return {
+    supported: true,
+    tier,
+    vendor: info.vendor ?? 'unknown',
+    device: info.device ?? 'unknown',
+    architecture: info.architecture ?? 'unknown',
+    degraded: tier === 'software' || tier === 'integrated',
+    warning,
+  };
+}
+
 /**
  * Check if a model is already downloaded in the browser cache.
  */
@@ -216,6 +336,12 @@ export function getCurrentModelId(): string | null {
  */
 const INFERENCE_TIMEOUT_MS = 30_000;
 
+export interface ChatCompletionOptions {
+  maxTokens?: number;
+  temperature?: number;
+  timeoutMs?: number;
+}
+
 export interface InferenceStats {
   promptTokens: number;
   completionTokens: number;
@@ -240,16 +366,19 @@ export async function chatCompletion(
   systemPrompt: string,
   userPrompt: string,
   callbacks?: InferenceCallbacks,
+  options?: ChatCompletionOptions,
 ): Promise<string> {
   if (!engine) throw new Error('No model loaded');
 
+  // Clear any previous conversation context before starting
   await engine.resetChat();
 
   const startTime = performance.now();
   let fullText = '';
   let timedOut = false;
 
-  const timer = setTimeout(() => { timedOut = true; }, INFERENCE_TIMEOUT_MS);
+  const effectiveTimeout = options?.timeoutMs ?? INFERENCE_TIMEOUT_MS;
+  const timer = setTimeout(() => { timedOut = true; }, effectiveTimeout);
 
   try {
     const stream = await engine.chat.completions.create({
@@ -257,15 +386,15 @@ export async function chatCompletion(
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.3,
-      max_tokens: 400,
+      temperature: options?.temperature ?? 0.3,
+      max_tokens: options?.maxTokens ?? 400,
       stream: true,
       stream_options: { include_usage: true },
     });
 
     for await (const chunk of stream) {
       if (timedOut) {
-        throw new Error('Inference timeout (30s) — GPU may be overloaded');
+        throw new Error(`Inference timeout (${effectiveTimeout / 1000}s) — GPU may be overloaded`);
       }
 
       const delta = chunk.choices[0]?.delta?.content ?? '';
@@ -304,5 +433,8 @@ export async function chatCompletion(
     return fullText;
   } finally {
     clearTimeout(timer);
+    // Post-inference: eagerly clear KV cache so GPU token storage is released
+    // immediately rather than holding tokens until the next call's pre-reset.
+    try { await engine?.resetChat(); } catch { /* ignore cleanup errors */ }
   }
 }

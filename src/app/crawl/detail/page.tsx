@@ -20,6 +20,7 @@ import { useCrawlDetail } from '@/hooks/useDb';
 import { useCrawler, type InferenceLogEntry } from '@/hooks/useCrawler';
 import { useWebLLM } from '@/hooks/useWebLLM';
 import { exportToJson, exportToCsv } from '@/lib/export/client-export';
+import { ReportModal } from '@/components/crawl/report-modal';
 
 export default function CrawlDetailPage() {
   return (
@@ -41,6 +42,7 @@ function CrawlDetailContent() {
   const [copied, setCopied] = useState('');
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [showReport, setShowReport] = useState(false);
   const startedRef = useRef(false);
 
   // Auto-start crawl when we land on a pending crawl (navigated from form)
@@ -163,16 +165,6 @@ function CrawlDetailContent() {
                 Stop
               </Button>
             )}
-            {isComplete && (
-              <div className="flex gap-1">
-                <Button variant="ghost" size="sm" onClick={handleExportCsv}>
-                  <Download className="w-4 h-4" /> CSV
-                </Button>
-                <Button variant="ghost" size="sm" onClick={handleExportJson}>
-                  <Download className="w-4 h-4" /> JSON
-                </Button>
-              </div>
-            )}
             {(crawl.status === 'failed' || (crawl.status === 'completed' && !sm)) && webllm.isReady && (
               <Button variant="secondary" size="sm" onClick={handleResumeAnalysis}>
                 <RotateCcw className="w-4 h-4" />
@@ -191,6 +183,19 @@ function CrawlDetailContent() {
 
       <div className="flex flex-wrap items-center gap-3 mb-6">
         <StatusBadge status={effectiveStatus} />
+        {isComplete && (
+          <div className="flex gap-1.5 ml-auto">
+            <Button variant="ghost" size="sm" onClick={handleExportCsv}>
+              <Download className="w-3.5 h-3.5" /> CSV
+            </Button>
+            <Button variant="ghost" size="sm" onClick={handleExportJson}>
+              <Download className="w-3.5 h-3.5" /> JSON
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setShowReport(true)}>
+              <Download className="w-3.5 h-3.5" /> Report
+            </Button>
+          </div>
+        )}
         {isLive && (() => {
           // Show hook progress if available, otherwise derive from Dexie data
           const displayProgress = crawlerOwned
@@ -276,9 +281,24 @@ function CrawlDetailContent() {
 
               <Card>
                 <CardHeader><CardTitle>Recommendations</CardTitle></CardHeader>
+                {(sm.critical_issues ?? []).length > 0 && (
+                  <div className="mb-4">
+                    <p className="text-xs font-semibold text-red-400 uppercase tracking-wide mb-2">Critical Issues</p>
+                    <ul className="space-y-2">
+                      {(sm.critical_issues as string[]).map((issue, i) => (
+                        <li key={i} className="flex items-start justify-between gap-3 text-sm">
+                          <span className="text-text flex-1">{issue}</span>
+                          <Link href={`/counter-measure?crawlId=${crawl.id}&issueIndex=${i}&type=critical`}>
+                            <Button variant="ghost" size="sm">Fix →</Button>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <Recommendations
                   priority={sm.priority_recommendations ?? []}
-                  critical={sm.critical_issues ?? []}
+                  critical={[]}
                 />
               </Card>
             </>
@@ -346,7 +366,12 @@ function CrawlDetailContent() {
                       {sorted.map((p) => (
                         <tr key={p.id} className="border-b border-border/30">
                           <td className="py-2 pr-4 text-muted">{p.index + 1}</td>
-                          <td className="py-2 pr-4 text-accent truncate max-w-[200px]">{p.url}</td>
+                          <td className="py-2 pr-4 truncate max-w-[200px]">
+                            <a href={p.url} target="_blank" rel="noopener noreferrer"
+                              className="text-accent hover:underline truncate"
+                              title={p.url}
+                            >{p.url}</a>
+                          </td>
                           <td className="py-2 pr-2"><PageScoreCell score={p.avgScore} /></td>
                           <td className="py-2 pr-2" title={p.explanations.entity_clarity || undefined}>
                             <PageScoreCell score={p.analysis?.entityClarityScore ?? null} />
@@ -446,6 +471,15 @@ function CrawlDetailContent() {
           </Card>
         </div>
       </div>
+
+      {showReport && (
+        <ReportModal
+          crawl={crawl}
+          pages={pages}
+          analyses={analyses}
+          onClose={() => setShowReport(false)}
+        />
+      )}
     </>
   );
 }

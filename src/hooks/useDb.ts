@@ -67,6 +67,74 @@ export function useCrawlDetail(crawlId: number | undefined) {
   }, [crawlId]);
 }
 
+export interface CrawlIssueItem {
+  crawlId: number;
+  baseUrl: string;
+  grade: string | null;
+  createdAt: string;
+  pageIssues: Array<{
+    text: string;
+    sourceUrl: string;
+    crawlPageId: number;
+  }>;
+  siteIssues: string[];
+}
+
+/**
+ * Returns all completed crawls with their critical issues aggregated
+ * from per-page geoRecommendations and site-level siteMetrics.
+ */
+export function useCompletedCrawlsWithIssues(): CrawlIssueItem[] | undefined {
+  return useLiveQuery(async () => {
+    try {
+      const crawls = await db.crawls
+        .where('status').equals('completed')
+        .reverse()
+        .toArray();
+
+      const items: CrawlIssueItem[] = [];
+
+      for (const c of crawls) {
+        const analyses = await db.pageAnalyses
+          .where('crawlId').equals(c.id!)
+          .toArray();
+
+        const pageIssues: CrawlIssueItem['pageIssues'] = [];
+        for (const a of analyses) {
+          try {
+            const recs: Array<{ priority: string; text: string }> = JSON.parse(a.geoRecommendations ?? '[]');
+            for (const r of recs) {
+              if (r.priority === 'critical') {
+                pageIssues.push({ text: r.text, sourceUrl: a.url, crawlPageId: a.crawlPageId });
+              }
+            }
+          } catch { /* skip malformed JSON */ }
+        }
+
+        let siteIssues: string[] = [];
+        try {
+          const sm = c.siteMetrics ? JSON.parse(c.siteMetrics) : null;
+          siteIssues = Array.isArray(sm?.critical_issues) ? sm.critical_issues : [];
+        } catch { /* skip malformed JSON */ }
+
+        items.push({
+          crawlId: c.id!,
+          baseUrl: c.baseUrl,
+          grade: c.overallGrade ?? null,
+          createdAt: c.createdAt,
+          pageIssues,
+          siteIssues,
+        });
+      }
+
+      return items;
+    } catch {
+      // Return empty array on IndexedDB errors rather than propagating to React error boundary
+      return [];
+    }
+  }, []); // empty deps: run once on mount, re-run when observed tables change
+}
+
 /**
  * Delete crawls and their associated data.
  */

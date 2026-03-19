@@ -10,10 +10,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen">
+      {/* lg:flex turns the body into a row: sidebar | main content (no overlay) */}
+      <body className="min-h-screen lg:flex">
         <Sidebar />
-        {/* pt-14 on mobile for the fixed header bar, lg:pt-0 + lg:ml-60 for desktop sidebar */}
-        <main className="pt-14 px-3 pb-8 lg:pt-0 lg:ml-60 lg:p-8 overflow-x-hidden">{children}</main>
+        {/* Mobile: pt-14 for the fixed hamburger bar. Desktop: sidebar is in-flow, no margin needed */}
+        <main className="flex-1 pt-14 px-4 pb-8 lg:pt-0 lg:p-8 min-w-0 overflow-x-hidden">{children}</main>
       </body>
     </html>
   );

@@ -157,8 +157,11 @@ export function CrawlTerminal({ lines, status, baseUrl, analyzedCount, totalPage
                   <span className="text-accent3 flex-shrink-0">✓</span>
                 )}
 
-                <motion.span
-                  className={`truncate flex-1 min-w-0 ${
+                <motion.a
+                  href={page.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`truncate flex-1 min-w-0 hover:underline ${
                     pending ? 'text-muted/40' : analyzed ? 'text-accent2/80' : 'text-accent'
                   }`}
                   initial={{ clipPath: 'inset(0 100% 0 0)' }}
@@ -166,7 +169,7 @@ export function CrawlTerminal({ lines, status, baseUrl, analyzedCount, totalPage
                   transition={{ duration: 0.45, ease: 'linear' }}
                 >
                   {page.url}
-                </motion.span>
+                </motion.a>
 
                 {page.title && (
                   <span className="text-muted/50 flex-shrink-0 hidden sm:inline truncate max-w-32">

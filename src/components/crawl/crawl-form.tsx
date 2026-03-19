@@ -1,13 +1,34 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import Link from 'next/link';
-import { Globe, Loader2, Cpu, AlertTriangle } from 'lucide-react';
+import { Globe, Loader2, Cpu, AlertTriangle, Clock, X } from 'lucide-react';
 import { useWebLLM } from '@/hooks/useWebLLM';
 import { createCrawl } from '@/hooks/useCrawler';
+
+const RECENT_URLS_KEY = 'crawl:recent-urls';
+const MAX_RECENT = 8;
+
+function loadRecentUrls(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_URLS_KEY) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentUrl(url: string) {
+  const prev = loadRecentUrls().filter((u) => u !== url);
+  localStorage.setItem(RECENT_URLS_KEY, JSON.stringify([url, ...prev].slice(0, MAX_RECENT)));
+}
+
+function removeRecentUrl(url: string) {
+  const prev = loadRecentUrls().filter((u) => u !== url);
+  localStorage.setItem(RECENT_URLS_KEY, JSON.stringify(prev));
+}
 
 export function CrawlForm() {
   const router = useRouter();
@@ -20,6 +41,24 @@ export function CrawlForm() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [recentUrls, setRecentUrls] = useState<string[]>([]);
+  const [showRecent, setShowRecent] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setRecentUrls(loadRecentUrls());
+  }, []);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowRecent(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   // Check if any model is cached (for showing helpful messages)
   const hasCachedModels = Object.values(webllm.cacheStatus).some(Boolean);
@@ -79,6 +118,7 @@ export function CrawlForm() {
     setSubmitting(true);
     try {
       const crawlId = await createCrawl(finalUrl, { limit, analyze });
+      saveRecentUrl(finalUrl);
       router.push(`/crawl/detail?id=${crawlId}&analyze=${analyze}&limit=${limit}`);
     } catch {
       setError('Failed to create crawl');
@@ -94,20 +134,51 @@ export function CrawlForm() {
           <label htmlFor="url" className="block text-sm font-medium text-muted">
             Website URL
           </label>
-          <div className="flex">
-            <span className="inline-flex items-center px-3 rounded-l-lg border border-r-0 border-border bg-surface2/60 text-xs text-muted select-none">
-              https://
-            </span>
-            <input
-              id="url"
-              type="text"
-              placeholder="example.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value.replace(/^https?:\/\//i, ''))}
-              className={`flex-1 bg-surface2 border border-border rounded-r-lg px-3 py-2 text-sm text-text
-                placeholder:text-muted/50 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30
-                transition-colors ${error ? 'border-red-500/50' : ''}`}
-            />
+          <div className="relative" ref={dropdownRef}>
+            <div className="flex">
+              <span className="inline-flex items-center px-3 rounded-l-lg border border-r-0 border-border bg-surface2/60 text-xs text-muted select-none">
+                https://
+              </span>
+              <input
+                id="url"
+                type="text"
+                placeholder="example.com"
+                value={url}
+                onChange={(e) => setUrl(e.target.value.replace(/^https?:\/\//i, ''))}
+                onFocus={() => recentUrls.length > 0 && setShowRecent(true)}
+                className={`flex-1 bg-surface2 border border-border rounded-r-lg px-3 py-2 text-sm text-text
+                  placeholder:text-muted/50 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30
+                  transition-colors ${error ? 'border-red-500/50' : ''}`}
+              />
+            </div>
+            {showRecent && recentUrls.length > 0 && (
+              <div className="absolute z-10 mt-1 w-full bg-surface2 border border-border rounded-lg shadow-lg overflow-hidden">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border">
+                  <Clock className="w-3 h-3 text-muted" />
+                  <span className="text-xs text-muted">Recent</span>
+                </div>
+                {recentUrls.map((u) => (
+                  <div key={u} className="flex items-center group hover:bg-surface px-3 py-1.5 cursor-pointer"
+                    onClick={() => { setUrl(u.replace(/^https?:\/\//i, '')); setShowRecent(false); }}
+                  >
+                    <span className="flex-1 text-sm text-text truncate">{u}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeRecentUrl(u);
+                        const updated = loadRecentUrls();
+                        setRecentUrls(updated);
+                        if (updated.length === 0) setShowRecent(false);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-muted hover:text-text transition-opacity"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           {error && <p className="text-xs text-red-400">{error}</p>}
         </div>

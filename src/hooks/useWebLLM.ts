@@ -17,8 +17,10 @@ import {
   deleteModelFromCache,
   getCurrentModelId,
   supportsWebGPU,
+  getGpuInfo,
   AVAILABLE_MODELS,
 } from '@/lib/webllm/engine';
+import type { GpuInfo } from '@/lib/webllm/engine';
 import { analyzePageForGeo } from '@/lib/webllm/analyzer';
 import type { GeoPageAnalysis } from '@/types/analysis';
 
@@ -29,6 +31,7 @@ interface WebLLMState {
   loadProgress: { text: string; progress: number };
   error: string | null;
   hasWebGPU: boolean;
+  gpuInfo: GpuInfo | null;
   currentModel: string | null;
   /** Map of modelId → cached status. Starts empty, populated async on mount. */
   cacheStatus: Record<string, boolean>;
@@ -44,6 +47,7 @@ export function useWebLLM() {
     loadProgress: { text: '', progress: 0 },
     error: null,
     hasWebGPU: false,
+    gpuInfo: null,
     currentModel: getCurrentModelId(),
     cacheStatus: {},
     downloadingModel: null,
@@ -55,9 +59,14 @@ export function useWebLLM() {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Check WebGPU support + cache status on mount
+  // Check WebGPU support + GPU info + cache status on mount
   useEffect(() => {
     setState((s) => ({ ...s, hasWebGPU: supportsWebGPU() }));
+    getGpuInfo().then((info) => {
+      if (mountedRef.current) {
+        setState((s) => ({ ...s, gpuInfo: info }));
+      }
+    });
     refreshCacheStatus();
   }, []);
 

@@ -36,7 +36,7 @@ interface AnalyzePageInput {
 export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPageAnalysis> {
   const { url, markdown, baseUrl, onProgress, onToken, onStats } = input;
 
-  const truncated = smartTruncate(markdown, 1200);
+  const truncated = smartTruncate(markdown, 4000);
   const prompt = buildGeoAnalysisPrompt({ url, markdown: truncated, baseUrl });
 
   onProgress?.(`Analyzing: ${url}`);

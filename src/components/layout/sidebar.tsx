@@ -3,11 +3,12 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Globe, Settings, Plus, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Globe, Settings, Plus, Menu, X, ShieldCheck } from 'lucide-react';
 
 const nav = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/crawl', label: 'New Crawl', icon: Plus },
+  { href: '/counter-measure', label: 'Counter Measure', icon: ShieldCheck },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -33,12 +34,12 @@ export function Sidebar() {
         <div className="fixed inset-0 bg-black/60 z-[60] lg:hidden" onClick={() => setOpen(false)} />
       )}
 
-      {/* Sidebar drawer */}
+      {/* Sidebar drawer — fixed overlay on mobile, sticky in-flow column on desktop */}
       <aside
         className={`fixed top-0 left-0 h-screen w-60 bg-surface border-r border-border flex flex-col z-[70]
           transition-transform duration-200 ease-in-out
           ${open ? 'translate-x-0' : '-translate-x-full'}
-          lg:translate-x-0`}
+          lg:sticky lg:translate-x-0 lg:z-auto lg:flex-shrink-0 lg:self-start`}
       >
         <div className="p-5 border-b border-border flex items-center justify-between">
           <Link href="/" onClick={() => setOpen(false)} className="flex items-center gap-2 text-accent font-bold text-lg">

@@ -11,11 +11,27 @@ import { Cpu, Trash2, Monitor, Loader2, Download, Play, Square, HardDrive, Zap }
 
 type SizeFilter = 'all' | 'tiny' | 'small' | 'medium' | 'large';
 
+function readCorsProxy(): string {
+  try {
+    return typeof window !== 'undefined' ? localStorage.getItem('corsProxy') ?? '' : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeCorsProxy(value: string) {
+  try {
+    if (value.trim()) {
+      localStorage.setItem('corsProxy', value.trim());
+    } else {
+      localStorage.removeItem('corsProxy');
+    }
+  } catch { /* ignore */ }
+}
+
 export default function SettingsPage() {
   const webllm = useWebLLM();
-  const [corsProxy, setCorsProxy] = useState(
-    typeof window !== 'undefined' ? localStorage.getItem('corsProxy') ?? '' : '',
-  );
+  const [corsProxy, setCorsProxy] = useState(readCorsProxy);
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [actionModel, setActionModel] = useState<string | null>(null);
 
@@ -27,31 +43,17 @@ export default function SettingsPage() {
 
   async function handleDownload(modelId: string) {
     setActionModel(modelId);
-    await webllm.download(modelId);
-    setActionModel(null);
+    try { await webllm.download(modelId); } finally { setActionModel(null); }
   }
 
   async function handleLoad(modelId: string) {
     setActionModel(modelId);
-    await webllm.load(modelId);
-    setActionModel(null);
+    try { await webllm.load(modelId); } finally { setActionModel(null); }
   }
 
   async function handleDelete(modelId: string) {
-    // Unload first if this is the active model
-    if (webllm.currentModel === modelId) {
-      await webllm.unload();
-    }
+    if (webllm.currentModel === modelId) await webllm.unload();
     await webllm.deleteModel(modelId);
-  }
-
-  function saveCorsProxy(value: string) {
-    setCorsProxy(value);
-    if (value.trim()) {
-      localStorage.setItem('corsProxy', value.trim());
-    } else {
-      localStorage.removeItem('corsProxy');
-    }
   }
 
   function formatVram(mb: number): string {
@@ -60,13 +62,13 @@ export default function SettingsPage() {
 
   function tagColor(tag: string): string {
     switch (tag) {
-      case 'tiny': return 'text-green-400 bg-green-400/10 border-green-400/20';
-      case 'small': return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
-      case 'medium': return 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20';
-      case 'large': return 'text-orange-400 bg-orange-400/10 border-orange-400/20';
+      case 'tiny':        return 'text-green-400 bg-green-400/10 border-green-400/20';
+      case 'small':       return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
+      case 'medium':      return 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20';
+      case 'large':       return 'text-orange-400 bg-orange-400/10 border-orange-400/20';
       case 'recommended': return 'text-accent bg-accent/10 border-accent/20';
-      case 'fast': return 'text-green-300 bg-green-300/10 border-green-300/20';
-      default: return 'text-muted bg-surface2 border-border';
+      case 'fast':        return 'text-green-300 bg-green-300/10 border-green-300/20';
+      default:            return 'text-muted bg-surface2 border-border';
     }
   }
 
@@ -77,7 +79,8 @@ export default function SettingsPage() {
         description="Download AI models, configure CORS proxy, and check browser capabilities"
       />
 
-      <div className="space-y-6 max-w-2xl">
+      <div className="space-y-6">
+
         {/* WebGPU Status */}
         <Card>
           <CardHeader>
@@ -86,29 +89,47 @@ export default function SettingsPage() {
               <CardTitle>WebGPU Status</CardTitle>
             </div>
           </CardHeader>
-          <div className="flex items-center gap-3">
-            <Badge variant={webllm.hasWebGPU ? 'success' : 'warning'}>
-              {webllm.hasWebGPU ? 'Supported' : 'Not Available'}
-            </Badge>
-            <span className="text-sm text-muted">
-              {webllm.hasWebGPU
-                ? 'GPU acceleration available for AI inference'
-                : 'Use Chrome or Edge for WebGPU support'}
-            </span>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <Badge variant={
+                !webllm.hasWebGPU ? 'warning' :
+                webllm.gpuInfo?.tier === 'dedicated' ? 'success' :
+                webllm.gpuInfo?.tier === 'software' ? 'error' :
+                webllm.gpuInfo?.tier === 'integrated' ? 'warning' :
+                'default'
+              }>
+                {!webllm.hasWebGPU ? 'Not Available' :
+                 webllm.gpuInfo?.tier === 'dedicated' ? 'Dedicated GPU' :
+                 webllm.gpuInfo?.tier === 'integrated' ? 'Integrated GPU' :
+                 webllm.gpuInfo?.tier === 'software' ? 'Software Renderer' :
+                 'Detecting…'}
+              </Badge>
+              {webllm.gpuInfo && (webllm.gpuInfo.vendor || webllm.gpuInfo.device) && (
+                <span className="text-sm text-muted font-mono">
+                  {webllm.gpuInfo.vendor} {webllm.gpuInfo.device}
+                </span>
+              )}
+            </div>
+            {webllm.gpuInfo?.warning && (
+              <p className="text-xs text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 rounded-lg px-3 py-2">
+                {webllm.gpuInfo.warning}
+              </p>
+            )}
+            {!webllm.hasWebGPU && (
+              <p className="text-xs text-muted">Use Chrome or Edge for WebGPU support.</p>
+            )}
           </div>
         </Card>
 
         {/* Model Library */}
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Cpu className="w-4 h-4 text-accent" />
-                <CardTitle>Model Library</CardTitle>
-                {cachedCount > 0 && (
-                  <span className="text-xs text-muted">({cachedCount} downloaded)</span>
-                )}
-              </div>
+            <div className="flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-accent" />
+              <CardTitle>Model Library</CardTitle>
+              {cachedCount > 0 && (
+                <span className="text-xs text-muted">({cachedCount} downloaded)</span>
+              )}
             </div>
           </CardHeader>
 
@@ -134,15 +155,17 @@ export default function SettingsPage() {
             ))}
           </div>
 
-          {/* Download progress bar (shown when downloading or loading) */}
+          {/* Download / load progress bar */}
           {(webllm.isLoading || webllm.downloadingModel) && (
-            <div className="mb-4 p-3 bg-surface2/50 rounded-lg border border-border space-y-2">
+            <div className="mb-4 p-3 bg-surface2 rounded-lg border border-border space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-text font-medium">
+                <span className="text-text font-medium truncate pr-2">
                   {webllm.downloadingModel ? 'Downloading' : 'Loading'}:{' '}
                   {webllm.downloadingModel ?? webllm.currentModel ?? actionModel}
                 </span>
-                <span className="text-muted">{Math.round(webllm.loadProgress.progress * 100)}%</span>
+                <span className="text-muted flex-shrink-0">
+                  {Math.round(webllm.loadProgress.progress * 100)}%
+                </span>
               </div>
               <div className="h-2 bg-surface rounded-full overflow-hidden">
                 <div
@@ -181,9 +204,7 @@ export default function SettingsPage() {
 
         {/* CORS Proxy */}
         <Card>
-          <CardHeader>
-            <CardTitle>CORS Proxy</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>CORS Proxy</CardTitle></CardHeader>
           <div className="space-y-3">
             <p className="text-xs text-muted">
               Pages are fetched through a CORS proxy to bypass browser restrictions.
@@ -193,7 +214,7 @@ export default function SettingsPage() {
               type="text"
               placeholder="https://api.allorigins.win/raw?url="
               value={corsProxy}
-              onChange={(e) => saveCorsProxy(e.target.value)}
+              onChange={(e) => { setCorsProxy(e.target.value); writeCorsProxy(e.target.value); }}
               className="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text
                 placeholder:text-muted/50 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30"
             />
@@ -202,10 +223,8 @@ export default function SettingsPage() {
 
         {/* Crawler Defaults */}
         <Card>
-          <CardHeader>
-            <CardTitle>Crawler Defaults</CardTitle>
-          </CardHeader>
-          <div className="space-y-4 text-sm">
+          <CardHeader><CardTitle>Crawler Defaults</CardTitle></CardHeader>
+          <div className="space-y-3 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-muted">Default page limit</span>
               <span className="text-text font-mono">50</span>
@@ -220,14 +239,14 @@ export default function SettingsPage() {
             </div>
           </div>
         </Card>
+
       </div>
     </>
   );
 }
 
-/**
- * Individual model card with download/load/delete actions.
- */
+// ── Model Card ────────────────────────────────────────────────────────────────
+
 function ModelCard({
   model,
   isCached,
@@ -259,15 +278,15 @@ function ModelCard({
         isActive
           ? 'border-accent bg-accent/5'
           : isCached
-            ? 'border-border bg-surface2/30'
+            ? 'border-border bg-surface2'
             : 'border-border/50'
       }`}
     >
-      {/* Top row: name + tags */}
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-text font-medium">{model.label}</span>
+      {/* Top row: name + tags + status */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-medium text-text">{model.label}</span>
             {model.tags.map((tag) => (
               <span
                 key={tag}
@@ -277,21 +296,21 @@ function ModelCard({
               </span>
             ))}
           </div>
-          <p className="text-xs text-muted mt-0.5">{model.id}</p>
+          <p className="text-xs text-muted mt-0.5 truncate" title={model.id}>{model.id}</p>
         </div>
-
-        {/* Status badge */}
-        {isActive && <Badge variant="success">Active</Badge>}
-        {!isActive && isCached && (
-          <div className="flex items-center gap-1 text-xs text-muted">
-            <HardDrive className="w-3 h-3" />
-            Cached
-          </div>
-        )}
+        <div className="flex-shrink-0 pt-0.5">
+          {isActive && <Badge variant="success">Active</Badge>}
+          {!isActive && isCached && (
+            <span className="flex items-center gap-1 text-xs text-muted">
+              <HardDrive className="w-3 h-3" />
+              Cached
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Bottom row: specs + actions */}
-      <div className="flex items-center justify-between mt-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-3 text-xs text-muted">
           <span>{model.sizeHint}</span>
           <span className="flex items-center gap-1">
@@ -299,49 +318,27 @@ function ModelCard({
             {formatVram(model.vramMB)} VRAM
           </span>
         </div>
-
         <div className="flex items-center gap-1">
           {isActive ? (
             <Button variant="ghost" size="sm" onClick={onUnload}>
               <Square className="w-3 h-3" />
               Unload
             </Button>
-          ) : (
+          ) : isCached ? (
             <>
-              {isCached ? (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={onLoad}
-                    disabled={isBusy}
-                    className="text-accent"
-                  >
-                    {isActionTarget ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-                    Load
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={onDelete}
-                    disabled={isBusy}
-                    className="text-red-400/70 hover:text-red-400"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onDownload}
-                  disabled={isBusy}
-                >
-                  {isActionTarget ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                  Download
-                </Button>
-              )}
+              <Button variant="ghost" size="sm" onClick={onLoad} disabled={isBusy} className="text-accent">
+                {isActionTarget ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                Load
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onDelete} disabled={isBusy} className="text-red-400/70 hover:text-red-400">
+                <Trash2 className="w-3 h-3" />
+              </Button>
             </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={onDownload} disabled={isBusy}>
+              {isActionTarget ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+              Download
+            </Button>
           )}
         </div>
       </div>

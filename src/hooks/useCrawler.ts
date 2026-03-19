@@ -35,8 +35,9 @@ export interface CrawlerState {
   inferenceLog: InferenceLogEntry[];
 }
 
-/** Yield main thread so React can process pending renders and user input */
-const yieldThread = () => new Promise<void>((r) => setTimeout(r, 0));
+/** Yield main thread so React can process pending renders and allow the
+ *  WebGPU command queue to drain between inferences. */
+const yieldThread = () => new Promise<void>((r) => setTimeout(r, 50));
 
 /** Build default scores when AI inference fails or is skipped */
 function buildDefaultAnalysis(url: string, markdown: string): GeoPageAnalysis {
@@ -213,14 +214,15 @@ export function useCrawler() {
             safeSetState((s) => ({
               ...s,
               message: `Using defaults (GPU unavailable): ${page.url}`,
-              inferenceLog: [...s.inferenceLog, { url: page.url, output: '', stats: null, status: 'skipped' as const }],
+              inferenceLog: [...s.inferenceLog.slice(-9), { url: page.url, output: '', stats: null, status: 'skipped' as const }],
             }));
             result = buildDefaultAnalysis(page.url, page.markdown);
           } else {
             // Add streaming log entry
             safeSetState((s) => ({
               ...s,
-              inferenceLog: [...s.inferenceLog, { url: page.url, output: '', stats: null, status: 'streaming' as const }],
+              // Cap to last 10 entries to prevent unbounded JS heap growth
+              inferenceLog: [...s.inferenceLog.slice(-9), { url: page.url, output: '', stats: null, status: 'streaming' as const }],
             }));
 
             try {
