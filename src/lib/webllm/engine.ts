@@ -370,8 +370,17 @@ export async function chatCompletion(
 ): Promise<string> {
   if (!engine) throw new Error('No model loaded');
 
-  // Clear any previous conversation context before starting
+  // Hard-reset the KV cache before every generation. A single authoritative
+  // reset here is more reliable than also resetting in the finally block —
+  // a post-generation reset can silently fail when the GPU is still settling,
+  // leaving stale KV tokens that cause context to appear to accumulate across
+  // consecutive calls.
   await engine.resetChat();
+  // Give WebGPU's GC a window to collect stale KV cache buffers from the
+  // previous generation. resetChat() destroys + recreates GPU buffer
+  // allocations; without a yield the old allocation may not be released
+  // before the new one is created, causing VRAM to grow with each call.
+  await new Promise<void>(resolve => setTimeout(resolve, 200));
 
   const startTime = performance.now();
   let fullText = '';
@@ -433,8 +442,5 @@ export async function chatCompletion(
     return fullText;
   } finally {
     clearTimeout(timer);
-    // Post-inference: eagerly clear KV cache so GPU token storage is released
-    // immediately rather than holding tokens until the next call's pre-reset.
-    try { await engine?.resetChat(); } catch { /* ignore cleanup errors */ }
   }
 }

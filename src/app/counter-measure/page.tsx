@@ -14,7 +14,8 @@ import { chatCompletion } from '@/lib/webllm/engine';
 import type { InferenceStats } from '@/lib/webllm/engine';
 import { COUNTER_MEASURE_SYSTEM, buildCounterMeasurePrompt } from '@/lib/ai/counter-measure-prompt';
 import { smartTruncate } from '@/lib/ai/truncate';
-import { Settings, Copy, FileDown } from 'lucide-react';
+import { Settings, Copy, FileDown, RefreshCw } from 'lucide-react';
+import { unloadModel, loadModel } from '@/lib/webllm/engine';
 
 export default function CounterMeasurePage() {
   return (
@@ -22,6 +23,14 @@ export default function CounterMeasurePage() {
       <CounterMeasureContent />
     </Suspense>
   );
+}
+
+function extractHeadings(markdown: string, max = 8): string[] {
+  return markdown
+    .split('\n')
+    .filter(l => /^#{1,3}\s/.test(l))
+    .map(l => l.replace(/^#+\s/, '').trim())
+    .slice(0, max);
 }
 
 type GenStatus = 'idle' | 'generating' | 'done' | 'error';
@@ -46,6 +55,7 @@ function CounterMeasureContent() {
   const [genError, setGenError] = useState<string | null>(null);
   const [genWarning, setGenWarning] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [reloading, setReloading] = useState(false);
   // null = auto (derived from GPU tier); true/false = manual override
   const [compactOverride, setCompactOverride] = useState<boolean | null>(null);
 
@@ -63,10 +73,10 @@ function CounterMeasureContent() {
 
   // Token budget based on mode:
   //   compact : ~200 prompt tokens → 512 output tokens max, 45s timeout
-  //   full    : ~500 prompt tokens → 800 output tokens max, 75s timeout
-  const maxTokens  = compact ? 512  : 800;
-  const timeoutMs  = compact ? 45_000 : 75_000;
-  const excerptLen = compact ? 0    : 800;   // compact sends no excerpt
+  //   full    : ~700 prompt tokens → 2000 output tokens max, 3 min timeout
+  const maxTokens  = compact ? 512   : 2000;
+  const timeoutMs  = compact ? 45_000 : 180_000;
+  const excerptLen = compact ? 0     : 2500;   // compact sends no excerpt
 
   const crawlDetail = useCrawlDetail(selectedCrawlId ?? undefined);
 
@@ -179,6 +189,20 @@ function CounterMeasureContent() {
           currentScore: pageScores.length
             ? pageScores.reduce((a, b) => a + b, 0) / pageScores.length
             : null,
+          allScores: resolvedAnalysis ? {
+            'Entity Clarity':     resolvedAnalysis.entityClarityScore ?? 0,
+            'Content Quality':    resolvedAnalysis.contentQualityScore ?? 0,
+            'Semantic Structure': resolvedAnalysis.semanticStructureScore ?? 0,
+            'Entity Richness':    resolvedAnalysis.entityRichnessScore ?? 0,
+            'Citation Readiness': resolvedAnalysis.citationReadinessScore ?? 0,
+            'Technical SEO':      resolvedAnalysis.technicalSeoScore ?? 0,
+            'User Intent':        resolvedAnalysis.userIntentAlignmentScore ?? 0,
+            'Trust Signals':      resolvedAnalysis.trustSignalsScore ?? 0,
+            'Authority':          resolvedAnalysis.authorityScore ?? 0,
+          } : undefined,
+          pageHeadings: markdown ? extractHeadings(markdown) : [],
+          hasExistingSchema: resolvedAnalysis ? !!resolvedAnalysis.jsonLd : undefined,
+          wordCount: resolvedAnalysis?.wordCount ?? undefined,
           compact,
         }),
         { onToken: handleToken, onStats: handleStats },
@@ -209,6 +233,19 @@ function CounterMeasureContent() {
     }
   }, [selectedIssue, webllm.isReady, status, resolvedPage, resolvedAnalysis, selectedCrawl,
       affectedMetric, handleToken, handleStats, compact, maxTokens, timeoutMs, excerptLen]);
+
+  // Full GPU flush: unload then reload the model to clear all VRAM allocations.
+  // Use when VRAM climbs noticeably after several generations.
+  const handleReloadModel = useCallback(async () => {
+    if (!webllm.currentModel || reloading) return;
+    setReloading(true);
+    try {
+      await unloadModel();
+      await loadModel(webllm.currentModel);
+    } finally {
+      setReloading(false);
+    }
+  }, [webllm.currentModel, reloading]);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(outputRef.current);
@@ -350,15 +387,28 @@ h1,h2,h3{margin-top:1.5em}pre{white-space:pre-wrap;word-break:break-word}</style
                 </span>
               </div>
 
-              <Button
-                variant="primary"
-                size="lg"
-                className="w-full"
-                disabled={!canGenerate}
-                onClick={handleGenerate}
-              >
-                {status === 'generating' ? 'Generating…' : 'Generate Counter Measure'}
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="flex-1"
+                  disabled={!canGenerate}
+                  onClick={handleGenerate}
+                >
+                  {status === 'generating' ? 'Generating…' : 'Generate Counter Measure'}
+                </Button>
+                {webllm.isReady && (
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    disabled={reloading || status === 'generating'}
+                    onClick={handleReloadModel}
+                    title="Flush GPU memory — unloads and reloads the model to clear VRAM"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${reloading ? 'animate-spin' : ''}`} />
+                  </Button>
+                )}
+              </div>
             </div>
           </Card>
         </div>

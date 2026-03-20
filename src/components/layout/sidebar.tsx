@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Globe, Settings, Plus, Menu, X, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Globe, Settings, Plus, Menu, X, ShieldCheck, Eye } from 'lucide-react';
 
 const nav = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/crawl', label: 'New Crawl', icon: Plus },
   { href: '/counter-measure', label: 'Counter Measure', icon: ShieldCheck },
+  { href: '/page-analyser', label: 'Page Analyser', icon: Eye },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
