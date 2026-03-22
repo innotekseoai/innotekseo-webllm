@@ -24,10 +24,10 @@ const PATH_PATTERNS: Array<{ pattern: RegExp; type: SchemaType }> = [
   { pattern: /\/(category|tag|archive|collection)/i, type: 'CollectionPage' },
 ];
 
-const CONTENT_PATTERNS: Array<{ pattern: RegExp; type: SchemaType; weight: number }> = [
-  // FAQ patterns
-  { pattern: /\?\s*\n/g, type: 'FAQPage', weight: 3 },
-  { pattern: /^#{1,3}\s+.*\?/gm, type: 'FAQPage', weight: 5 },
+const CONTENT_PATTERNS: Array<{ pattern: RegExp; type: SchemaType; weight: number; minMatches?: number }> = [
+  // FAQ patterns — require at least 2 question headings to avoid false positives
+  { pattern: /\?\s*\n/g, type: 'FAQPage', weight: 3, minMatches: 2 },
+  { pattern: /^#{1,3}\s+.*\?/gm, type: 'FAQPage', weight: 5, minMatches: 2 },
   // Product patterns
   { pattern: /\$\d+[\d,.]*|\bprice\b|\badd to cart\b|\bbuy now\b/gi, type: 'Product', weight: 2 },
   // Article patterns
@@ -61,9 +61,9 @@ export function detectSchemaType(input: DetectionInput): SchemaType {
 
   // Content pattern scoring
   const scores = new Map<SchemaType, number>();
-  for (const { pattern, type, weight } of CONTENT_PATTERNS) {
+  for (const { pattern, type, weight, minMatches = 1 } of CONTENT_PATTERNS) {
     const matches = markdown.match(pattern);
-    if (matches && matches.length > 0) {
+    if (matches && matches.length >= minMatches) {
       scores.set(type, (scores.get(type) ?? 0) + matches.length * weight);
     }
   }
@@ -79,5 +79,5 @@ export function detectSchemaType(input: DetectionInput): SchemaType {
   }
 
   // Require minimum confidence threshold
-  return bestScore >= 4 ? bestType : 'WebPage';
+  return bestScore >= 6 ? bestType : 'WebPage';
 }

@@ -371,6 +371,9 @@ function CrawlDetailContent() {
                               className="text-accent hover:underline truncate"
                               title={p.url}
                             >{p.url}</a>
+                            {p.analysis?.confidenceScore === 0 && (
+                              <span className="ml-1 text-[10px] text-yellow-500 font-medium" title="Model output could not be parsed — scores are estimated defaults">⚠ est.</span>
+                            )}
                           </td>
                           <td className="py-2 pr-2"><PageScoreCell score={p.avgScore} /></td>
                           <td className="py-2 pr-2" title={p.explanations.entity_clarity || undefined}>

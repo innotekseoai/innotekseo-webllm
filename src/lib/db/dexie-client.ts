@@ -54,6 +54,7 @@ export interface PageAnalysisRecord {
   llmsTxtEntry: string | null;
   geoRecommendations: string | null; // JSON array string
   scoreExplanations: string | null; // JSON object string
+  confidenceScore: number | null;
 }
 
 class InnotekSEODatabase extends Dexie {

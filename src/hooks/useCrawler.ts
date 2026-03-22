@@ -13,9 +13,19 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { db } from '@/lib/db/dexie-client';
 import { crawlFromBrowser, type WebCrawlPage } from '@/lib/crawler/web-client';
 import { analyzePageForGeo, type InferenceStats } from '@/lib/webllm/analyzer';
+
+function safeJsonLd(jsonLd: string, url: string): string {
+  try {
+    JSON.parse(jsonLd);
+    return jsonLd;
+  } catch {
+    return JSON.stringify({ '@context': 'https://schema.org', '@type': 'WebPage', url });
+  }
+}
 import { isModelLoaded } from '@/lib/webllm/engine';
 import { aggregateResults } from '@/lib/analysis/engine';
 import type { GeoPageAnalysis } from '@/types/analysis';
+import { useContextProfile } from './useContextProfile';
 
 export interface InferenceLogEntry {
   url: string;
@@ -97,6 +107,8 @@ export function useCrawler() {
     analyzedCount: 0,
     inferenceLog: [],
   });
+
+  const { config: ctxConfig } = useContextProfile();
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
@@ -230,6 +242,7 @@ export function useCrawler() {
                 url: page.url,
                 markdown: page.markdown,
                 baseUrl,
+                truncateChars: ctxConfig.analyzerTruncate,
                 onProgress: (msg) => {
                   safeSetState((s) => ({ ...s, message: msg }));
                 },
@@ -288,10 +301,11 @@ export function useCrawler() {
                 authorityScore: result.authority_score,
                 factDensityCount: result.fact_density_count,
                 wordCount: result.word_count,
-                jsonLd: result.json_ld,
+                jsonLd: safeJsonLd(result.json_ld, page.url),
                 llmsTxtEntry: result.llms_txt_entry,
                 geoRecommendations: JSON.stringify(result.geo_recommendations),
                 scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+                confidenceScore: result.confidence_score ?? null,
               });
               await db.crawlPages.update(page.id!, { status: 'analyzed' });
             });
@@ -391,6 +405,7 @@ export function useCrawler() {
             url: page.url,
             markdown: page.markdown,
             baseUrl,
+            truncateChars: ctxConfig.analyzerTruncate,
             onProgress: (msg) => safeSetState((s) => ({ ...s, message: msg })),
           });
 
@@ -410,10 +425,11 @@ export function useCrawler() {
               authorityScore: result.authority_score,
               factDensityCount: result.fact_density_count,
               wordCount: result.word_count,
-              jsonLd: result.json_ld,
+              jsonLd: safeJsonLd(result.json_ld, page.url),
               llmsTxtEntry: result.llms_txt_entry,
               geoRecommendations: JSON.stringify(result.geo_recommendations),
               scoreExplanations: result.score_explanations ? JSON.stringify(result.score_explanations) : null,
+              confidenceScore: result.confidence_score ?? null,
             });
             await db.crawlPages.update(page.id!, { status: 'analyzed' });
           });

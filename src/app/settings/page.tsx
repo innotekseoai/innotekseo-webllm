@@ -1,15 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { Header } from '@/components/layout/header';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useWebLLM } from '@/hooks/useWebLLM';
 import type { WebLLMModel } from '@/lib/webllm/engine';
-import { Cpu, Trash2, Monitor, Loader2, Download, Play, Square, HardDrive, Zap } from 'lucide-react';
+import { useContextProfile } from '@/hooks/useContextProfile';
+import { CONTEXT_CONFIG } from '@/lib/config/context';
+import { Cpu, Trash2, Monitor, Loader2, Download, Play, Square, HardDrive, Zap, ExternalLink } from 'lucide-react';
 
-type SizeFilter = 'all' | 'tiny' | 'small' | 'medium' | 'large';
+type SizeFilter = 'all' | 'tiny' | 'small' | 'medium' | 'large' | 'xl';
 
 function readCorsProxy(): string {
   try {
@@ -31,6 +33,7 @@ function writeCorsProxy(value: string) {
 
 export default function SettingsPage() {
   const webllm = useWebLLM();
+  const ctx = useContextProfile();
   const [corsProxy, setCorsProxy] = useState(readCorsProxy);
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [actionModel, setActionModel] = useState<string | null>(null);
@@ -66,7 +69,9 @@ export default function SettingsPage() {
       case 'small':       return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
       case 'medium':      return 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20';
       case 'large':       return 'text-orange-400 bg-orange-400/10 border-orange-400/20';
+      case 'xl':          return 'text-purple-400 bg-purple-400/10 border-purple-400/20';
       case 'recommended': return 'text-accent bg-accent/10 border-accent/20';
+      case 'recommended-8gb': return 'text-purple-300 bg-purple-300/10 border-purple-300/20';
       case 'fast':        return 'text-green-300 bg-green-300/10 border-green-300/20';
       default:            return 'text-muted bg-surface2 border-border';
     }
@@ -121,6 +126,75 @@ export default function SettingsPage() {
           </div>
         </Card>
 
+        {/* Context Profile */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-accent" />
+              <CardTitle>Context Profile</CardTitle>
+              {ctx.isAuto && (
+                <span className="text-xs text-muted">(auto)</span>
+              )}
+            </div>
+          </CardHeader>
+          <div className="space-y-4">
+            {/* Toggle */}
+            <div className="flex gap-2">
+              {(['standard', 'large'] as const).map((p) => {
+                const active = ctx.profile === p;
+                const isAutoSelected = ctx.isAuto && (
+                  (p === 'large' && ctx.isXlModel) || (p === 'standard' && !ctx.isXlModel)
+                );
+                return (
+                  <button
+                    key={p}
+                    onClick={() => ctx.setProfile(ctx.override === p ? null : p)}
+                    className={`flex-1 px-4 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
+                      active
+                        ? p === 'large'
+                          ? 'border-purple-400 bg-purple-400/10 text-purple-300'
+                          : 'border-accent bg-accent/10 text-accent'
+                        : 'border-border bg-surface2 text-muted hover:text-text'
+                    }`}
+                  >
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                    {isAutoSelected && <span className="ml-1.5 text-[10px] opacity-70">auto</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Auto-detect note */}
+            {ctx.isAuto && (
+              <p className="text-xs text-muted">
+                {ctx.isXlModel
+                  ? 'Large profile auto-selected — a 7B+ model is loaded.'
+                  : 'Standard profile auto-selected. Load a 7B+ model to switch to Large automatically.'}
+                {' '}Click a button above to override.
+              </p>
+            )}
+
+            {/* Comparison table */}
+            <div className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-xs">
+              <span className="text-muted font-medium">Setting</span>
+              <span className="text-muted font-medium text-center">Standard</span>
+              <span className="text-purple-300 font-medium text-center">Large</span>
+              {[
+                ['Analyser context',   `${(CONTEXT_CONFIG.standard.analyzerTruncate/1000).toFixed(0)}k chars`,  `${(CONTEXT_CONFIG.large.analyzerTruncate/1000).toFixed(0)}k chars`],
+                ['Page analyser (full)', `${(CONTEXT_CONFIG.standard.pageAnalyserExcerptFull/1000).toFixed(0)}k / ${CONTEXT_CONFIG.standard.pageAnalyserTokensFull}t`, `${(CONTEXT_CONFIG.large.pageAnalyserExcerptFull/1000).toFixed(0)}k / ${CONTEXT_CONFIG.large.pageAnalyserTokensFull}t`],
+                ['Page analyser (compact)', `${(CONTEXT_CONFIG.standard.pageAnalyserExcerptCompact/1000).toFixed(0)}k / ${CONTEXT_CONFIG.standard.pageAnalyserTokensCompact}t`, `${(CONTEXT_CONFIG.large.pageAnalyserExcerptCompact/1000).toFixed(0)}k / ${CONTEXT_CONFIG.large.pageAnalyserTokensCompact}t`],
+                ['Counter-measure (full)', `${(CONTEXT_CONFIG.standard.counterMeasureExcerptFull/1000).toFixed(1)}k / ${CONTEXT_CONFIG.standard.counterMeasureTokensFull}t`, `${(CONTEXT_CONFIG.large.counterMeasureExcerptFull/1000).toFixed(1)}k / ${CONTEXT_CONFIG.large.counterMeasureTokensFull}t`],
+              ].map(([label, std, lrg]) => (
+                <Fragment key={label}>
+                  <span className="text-muted">{label}</span>
+                  <span className="font-mono text-text text-center">{std}</span>
+                  <span className="font-mono text-purple-300 text-center">{lrg}</span>
+                </Fragment>
+              ))}
+            </div>
+          </div>
+        </Card>
+
         {/* Model Library */}
         <Card>
           <CardHeader>
@@ -135,7 +209,7 @@ export default function SettingsPage() {
 
           {/* Size filter tabs */}
           <div className="flex gap-1.5 mb-4 flex-wrap">
-            {(['all', 'tiny', 'small', 'medium', 'large'] as SizeFilter[]).map((f) => (
+            {(['all', 'tiny', 'small', 'medium', 'large', 'xl'] as SizeFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setSizeFilter(f)}
@@ -174,6 +248,19 @@ export default function SettingsPage() {
                 />
               </div>
               <p className="text-xs text-muted truncate">{webllm.loadProgress.text}</p>
+            </div>
+          )}
+
+          {/* XL tier notice */}
+          {sizeFilter === 'xl' && (
+            <div className="mb-4 p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg space-y-1">
+              <p className="text-xs text-purple-300 font-medium">Requires 8 GB+ discrete GPU (NVIDIA / AMD)</p>
+              <p className="text-xs text-muted">
+                These models run via WebGPU in-browser — no server needed. Each download is 4–6 GB and is cached in
+                browser storage. Use <span className="font-mono">chrome://settings/content/all</span> to manage
+                cache if needed. Models marked <span className="text-purple-300 font-medium">recommended-8gb</span> are
+                the best starting point for SEO/GEO content generation.
+              </p>
             </div>
           )}
 
@@ -317,6 +404,17 @@ function ModelCard({
             <Zap className="w-3 h-3" />
             {formatVram(model.vramMB)} VRAM
           </span>
+          {model.infoUrl && (
+            <a
+              href={model.infoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-0.5 text-purple-400 hover:text-purple-300 transition-colors"
+            >
+              <ExternalLink className="w-3 h-3" />
+              HuggingFace
+            </a>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {isActive ? (

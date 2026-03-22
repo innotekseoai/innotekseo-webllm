@@ -13,6 +13,7 @@ import { chatCompletion } from '@/lib/webllm/engine';
 import type { InferenceStats } from '@/lib/webllm/engine';
 import { CONTEXT_GENERATION_SYSTEM, buildContextGenerationPrompt } from '@/lib/ai/context-generation-prompt';
 import { smartTruncate } from '@/lib/ai/truncate';
+import { useContextProfile } from '@/hooks/useContextProfile';
 import { Settings, Copy, FileDown, ExternalLink, RefreshCw } from 'lucide-react';
 import { unloadModel, loadModel } from '@/lib/webllm/engine';
 
@@ -26,12 +27,16 @@ export default function PageAnalyserPage() {
 
 type GenStatus = 'idle' | 'generating' | 'done' | 'error';
 
-function extractHeadings(markdown: string, max = 8): string[] {
+function extractHeadings(markdown: string): string[] {
   return markdown
     .split('\n')
     .filter(l => /^#{1,3}\s/.test(l))
-    .map(l => l.replace(/^#+\s/, '').trim())
-    .slice(0, max);
+    .map(l => l.replace(/^#+\s/, '').trim());
+}
+
+function extractImagePaths(markdown: string): string[] {
+  const matches = [...markdown.matchAll(/!\[.*?\]\(([^)]+)\)/g)];
+  return [...new Set(matches.map(m => m[1]).filter(Boolean))];
 }
 
 function PageAnalyserContent() {
@@ -54,15 +59,17 @@ function PageAnalyserContent() {
   const outputRef = useRef('');
   const outputDivRef = useRef<HTMLDivElement>(null);
 
+  const { config: ctxConfig } = useContextProfile();
+
   const gpuDegraded = !webllm.hasWebGPU
     || webllm.gpuInfo?.tier === 'integrated'
     || webllm.gpuInfo?.tier === 'software'
     || webllm.gpuInfo?.degraded === true;
   const compact = compactOverride !== null ? compactOverride : gpuDegraded;
 
-  const maxTokens = compact ? 512   : 2000;
-  const timeoutMs = compact ? 45_000 : 180_000;
-  const excerptLen = compact ? 0     : 2500;
+  const maxTokens = compact ? ctxConfig.pageAnalyserTokensCompact  : ctxConfig.pageAnalyserTokensFull;
+  const timeoutMs = compact ? ctxConfig.pageAnalyserTimeoutCompact : ctxConfig.pageAnalyserTimeoutFull;
+  const excerptLen = compact ? ctxConfig.pageAnalyserExcerptCompact : ctxConfig.pageAnalyserExcerptFull;
 
   const crawlDetail = useCrawlDetail(selectedCrawlId ?? undefined);
 
@@ -141,19 +148,32 @@ function PageAnalyserContent() {
         'Authority':          selectedAnalysis.authorityScore ?? 0,
       } : {};
 
+      const excerpt = smartTruncate(markdown, excerptLen);
+      const knownPaths = pages
+        .map(p => { try { return new URL(p.url).pathname; } catch { return null; } })
+        .filter((p): p is string => !!p)
+        .sort();
+
+      const userPrompt = buildContextGenerationPrompt({
+        url: selectedPage.url,
+        title: selectedPage.title ?? null,
+        existingDescription: selectedPage.description ?? null,
+        markdownExcerpt: excerpt,
+        pageHeadings: markdown ? extractHeadings(markdown) : [],
+        imagePaths: markdown ? extractImagePaths(markdown) : [],
+        scores,
+        existingJsonLd: selectedAnalysis?.jsonLd ?? null,
+        wordCount: selectedAnalysis?.wordCount ?? undefined,
+        knownPaths,
+        compact,
+      });
+
+      console.debug('[PageAnalyser] markdown chars:', markdown.length, '| excerpt chars:', excerpt.length, '| prompt chars:', userPrompt.length);
+      console.debug('[PageAnalyser] excerpt preview:', excerpt.slice(0, 300));
+
       await chatCompletion(
         CONTEXT_GENERATION_SYSTEM,
-        buildContextGenerationPrompt({
-          url: selectedPage.url,
-          title: selectedPage.title ?? null,
-          existingDescription: selectedPage.description ?? null,
-          markdownExcerpt: excerptLen > 0 ? smartTruncate(markdown, excerptLen) : '',
-          pageHeadings: markdown ? extractHeadings(markdown) : [],
-          scores,
-          hasExistingSchema: !!(selectedAnalysis?.jsonLd),
-          wordCount: selectedAnalysis?.wordCount ?? undefined,
-          compact,
-        }),
+        userPrompt,
         { onToken: handleToken, onStats: handleStats },
         { maxTokens, temperature: 0.7, timeoutMs },
       );
@@ -490,6 +510,11 @@ h1,h2,h3{margin-top:1.5em}pre{white-space:pre-wrap;word-break:break-word}</style
                 </div>
                 <span className="text-[10px] text-muted font-mono">
                   {compact ? `meta+schema · ≤${maxTokens}t` : `5 sections · ≤${maxTokens}t`}
+                  {selectedPage && (
+                    <span className={`ml-2 ${(selectedPage.markdown?.length ?? 0) === 0 ? 'text-red-400' : 'text-green-400/70'}`}>
+                      · ctx {Math.round(Math.min(selectedPage.markdown?.length ?? 0, excerptLen) / 100) / 10}k
+                    </span>
+                  )}
                 </span>
               </div>
 

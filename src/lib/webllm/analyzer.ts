@@ -18,6 +18,8 @@ interface AnalyzePageInput {
   url: string;
   markdown: string;
   baseUrl: string;
+  /** Override the default smartTruncate char limit (default: 6000) */
+  truncateChars?: number;
   onProgress?: (message: string) => void;
   /** Called with each token as the model generates */
   onToken?: (token: string, partialText: string) => void;
@@ -34,9 +36,9 @@ interface AnalyzePageInput {
  * 3. Number extraction fallback
  */
 export async function analyzePageForGeo(input: AnalyzePageInput): Promise<GeoPageAnalysis> {
-  const { url, markdown, baseUrl, onProgress, onToken, onStats } = input;
+  const { url, markdown, baseUrl, truncateChars = 6000, onProgress, onToken, onStats } = input;
 
-  const truncated = smartTruncate(markdown, 4000);
+  const truncated = smartTruncate(markdown, truncateChars);
   const prompt = buildGeoAnalysisPrompt({ url, markdown: truncated, baseUrl });
 
   onProgress?.(`Analyzing: ${url}`);
@@ -110,6 +112,7 @@ function buildDefaultResult(
     authority_score: clampScore(partial.authority_score) ?? 5,
     geo_recommendations: (partial.geo_recommendations as string[]) ?? [],
     score_explanations: partial.score_explanations as Record<string, string> | undefined,
+    confidence_score: 0,
   };
 }
 

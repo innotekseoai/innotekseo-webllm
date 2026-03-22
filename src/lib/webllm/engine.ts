@@ -14,6 +14,7 @@ export interface WebLLMModel {
   sizeHint: string;
   vramMB: number;
   tags: string[];
+  infoUrl?: string;
 }
 
 /**
@@ -101,6 +102,54 @@ export const AVAILABLE_MODELS: WebLLMModel[] = [
     sizeHint: '~2GB download',
     vramMB: 2520,
     tags: ['large'],
+  },
+  {
+    id: 'Qwen2.5-3B-Instruct-q4f16_1-MLC',
+    label: 'Qwen 2.5 3B',
+    sizeHint: '~2GB download',
+    vramMB: 2800,
+    tags: ['large'],
+  },
+  // -- XL: 4–6GB VRAM, 7B–9B models — requires 8GB+ discrete GPU --
+  {
+    id: 'Qwen2.5-7B-Instruct-q4f16_1-MLC',
+    label: 'Qwen 2.5 7B',
+    sizeHint: '~4.5GB download',
+    vramMB: 4600,
+    tags: ['xl', 'recommended-8gb'],
+    infoUrl: 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct',
+  },
+  {
+    id: 'Llama-3.1-8B-Instruct-q4f16_1-MLC',
+    label: 'Llama 3.1 8B',
+    sizeHint: '~4.9GB download',
+    vramMB: 5000,
+    tags: ['xl'],
+    infoUrl: 'https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct',
+  },
+  {
+    id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC',
+    label: 'Hermes 3 Llama 3.1 8B',
+    sizeHint: '~4.9GB download',
+    vramMB: 5000,
+    tags: ['xl'],
+    infoUrl: 'https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B',
+  },
+  {
+    id: 'DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC',
+    label: 'DeepSeek R1 7B (reasoning)',
+    sizeHint: '~4.5GB download',
+    vramMB: 4600,
+    tags: ['xl'],
+    infoUrl: 'https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
+  },
+  {
+    id: 'gemma-2-9b-it-q4f16_1-MLC',
+    label: 'Gemma 2 9B',
+    sizeHint: '~5.5GB download',
+    vramMB: 5700,
+    tags: ['xl'],
+    infoUrl: 'https://huggingface.co/google/gemma-2-9b-it',
   },
 ];
 

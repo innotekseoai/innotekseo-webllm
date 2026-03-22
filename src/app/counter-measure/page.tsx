@@ -14,6 +14,7 @@ import { chatCompletion } from '@/lib/webllm/engine';
 import type { InferenceStats } from '@/lib/webllm/engine';
 import { COUNTER_MEASURE_SYSTEM, buildCounterMeasurePrompt } from '@/lib/ai/counter-measure-prompt';
 import { smartTruncate } from '@/lib/ai/truncate';
+import { useContextProfile } from '@/hooks/useContextProfile';
 import { Settings, Copy, FileDown, RefreshCw } from 'lucide-react';
 import { unloadModel, loadModel } from '@/lib/webllm/engine';
 
@@ -69,14 +70,12 @@ function CounterMeasureContent() {
     || webllm.gpuInfo?.tier === 'integrated'
     || webllm.gpuInfo?.tier === 'software'
     || webllm.gpuInfo?.degraded === true;
+  const { config: ctxConfig } = useContextProfile();
   const compact = compactOverride !== null ? compactOverride : gpuDegraded;
 
-  // Token budget based on mode:
-  //   compact : ~200 prompt tokens → 512 output tokens max, 45s timeout
-  //   full    : ~700 prompt tokens → 2000 output tokens max, 3 min timeout
-  const maxTokens  = compact ? 512   : 2000;
-  const timeoutMs  = compact ? 45_000 : 180_000;
-  const excerptLen = compact ? 0     : 2500;   // compact sends no excerpt
+  const maxTokens  = compact ? ctxConfig.counterMeasureTokensCompact  : ctxConfig.counterMeasureTokensFull;
+  const timeoutMs  = compact ? ctxConfig.counterMeasureTimeoutCompact : ctxConfig.counterMeasureTimeoutFull;
+  const excerptLen = compact ? ctxConfig.counterMeasureExcerptCompact : ctxConfig.counterMeasureExcerptFull;
 
   const crawlDetail = useCrawlDetail(selectedCrawlId ?? undefined);
 
